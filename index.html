@@ -3174,7 +3174,9 @@ function zoneOptions() {
 }
 const wldIn = (files, name) => { const f = files && files.get(name); return f ? (f.w || (f.w = readWLD(f.bytes))) : null; };
 function dropZone() {
-  if (zoneState.group) { zoneState.group.traverse(o => { if (o.isMesh && !o.userData.shared) disposeMesh(o); }); root.remove(zoneState.group); }
+  // Collect first: disposing takes a mesh out of the group, which would
+  // upset a traverse still walking it.
+  if (zoneState.group) { const own = []; zoneState.group.traverse(o => { if (o.isMesh && !o.userData.shared) own.push(o); }); own.forEach(disposeMesh); root.remove(zoneState.group); }
   for (const m of zoneState.templates || []) disposeMesh(m);
   Object.assign(zoneState, { name: "", group: null, spots: [], ground: null, templates: [] }); $("zoneSpotWrap").hidden = true;
 }
