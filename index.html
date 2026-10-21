@@ -1551,7 +1551,16 @@ async function useHandle(h) {
 }
 async function pickClientFolder() {
   if (canRememberFolder()) {
-    try { const h = await window.showDirectoryPicker({ id: "eqclient", mode: "read" }); await idb("readwrite", st => st.put(h, "client")); await useHandle(h); return; }
+    // Start inside the folder picked last time. With only an id, Chrome opens
+    // the picker at that folder's parent, one level above where you were.
+    const last = await idb("readonly", st => st.get("client"));
+    const pick = opts => window.showDirectoryPicker(opts);
+    try {
+      let h;
+      try { h = await pick(last && last.kind === "directory" ? { startIn: last, mode: "read" } : { id: "eqclient", mode: "read" }); }
+      catch (e) { if (!last || (e && e.name === "AbortError")) throw e; h = await pick({ id: "eqclient", mode: "read" }); } // the remembered folder is gone
+      await idb("readwrite", st => st.put(h, "client")); await useHandle(h); return;
+    }
     catch (e) { if (e && e.name === "AbortError") return; }
   }
   $("eqdir").click();
