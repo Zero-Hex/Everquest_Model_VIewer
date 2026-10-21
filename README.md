@@ -55,7 +55,12 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
     through `NewArmorTagData.txt` and `OnDemandResources.txt`, put on the
     body and follow the animation. An armor piece you have open takes its
     slot in the set, replacing the set's piece, so a custom piece can be
-    checked against the rest of a set. Weapons and shields are held.
+    checked against the rest of a set. Weapons and shields are held. The tag
+    file's Hide Mesh flag is applied: the body's legs or feet under such a
+    piece are hidden, as in game.
+  - **Robes:** on Luclin bodies a robe texture (10-16) covers only the chest
+    and arms. In RoF2 the skirt is a model in the Robe slot, so pick a robe
+    set (116-121) for the full robe.
 - **Find:** open any item by ID through `OnDemandResources.txt`, by archive
   name, or by actor name inside the `.s3d` equipment archives.
 - **Recently opened:** reopen models you looked at before.

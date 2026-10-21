@@ -1944,6 +1944,7 @@ function bodyOptions() {
   sel.value = body.value;
 }
 function dropWorn() { for (const x of body.worn) disposeMesh(x.mesh); body.worn = []; body.set = ""; body.links = []; body.skinned = []; }   // arrange() relinks
+function dropSet() { const had = body.worn.some(x => x.hide); dropWorn(); if (had && body.model) applyBodyMats(); }
 function dropBody() {
   if (body.mesh) disposeMesh(body.mesh); dropWorn();
   Object.assign(body, { value: "stick", label: "", model: null, mesh: null, points: {}, anims: new Map(), anim: null, moving: false, links: [], skinned: [] });
@@ -2018,7 +2019,7 @@ async function setBody(value) {
   const keepAnim = body.animKey, keepMM = body.mm;
   Object.assign(body, { value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones, suffix, boneIdx,
     rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims, mms: [...mms].sort(), luclin,
-    baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", texFiles: null, points: {} });
+    baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
   dropWorn();
   await setBodyTexture(mms.has(keepMM) ? keepMM : "00");
   const pick = [keepAnim, "P01", "P01A", "P01B", "O01", "O01A"].find(k => k && anims.has(k)) || "";
@@ -2027,7 +2028,15 @@ async function setBody(value) {
 }
 async function setBodyTexture(mm) {
   body.mm = mm;
-  const lc = body.code.toLowerCase(), amr = +mm >= 17 ? await clientArc(`global${mm}_amr.s3d`) : null;
+  body.amr = +mm >= 17 ? await clientArc(`global${mm}_amr.s3d`) : null;
+  applyBodyMats();
+}
+// Body parts under a worn piece whose NewArmorTagData row says Hide Mesh
+// (legs, boots, robes): by slot, the body materials <race><part>NNNN.
+const HIDE_PARTS = { 5: ["LG"], 6: ["FT"], 7: ["LG"] };
+function applyBodyMats() {
+  const mm = body.mm, lc = body.code.toLowerCase(), amr = body.amr;
+  const hidden = new Set(body.worn.filter(x => x.hide).flatMap(x => HIDE_PARTS[x.mesh.userData.slot] || []));
   const has = k => body.files.has(k) || (amr && amr.has(k));
   body.texFiles = amr ? { get: k => body.files.get(k) || amr.get(k), has } : null;
   // The material name says the slot (HUMCH0001_MDF = chest, page 01); its
@@ -2039,7 +2048,9 @@ async function setBodyTexture(mm) {
     return file; };
   body.model.mats = body.baseMats.map(b => { const m = JSON.parse(JSON.stringify(b));
     m.props.forEach(p => { if (/^e_TextureDiffuse0$/i.test(p.name)) p.value = swap(m.name, p.value); });
-    if (m.anim) m.anim.files = m.anim.files.map(f => swap(m.name, f)); return m; });
+    if (m.anim) m.anim.files = m.anim.files.map(f => swap(m.name, f));
+    if (hidden.has((m.name || "").slice(body.code.length, body.code.length + 2).toUpperCase())) m.kind = "invisible";
+    return m; });
   buildBodyMesh();
 }
 function setBodyAnim(key) {
@@ -2104,7 +2115,7 @@ async function readTags() {
   for (const l of (await (await client.tags.get()).text()).split(/\r?\n/)) {
     if (!l.trim() || l.startsWith("#")) continue; const f = l.split("\t"), id = parseInt(f[0], 10);
     if (!(id >= 0)) continue;
-    const r = { set: Math.floor(id / 100), slot: id % 100, tag: (f[1] || "").trim(), it: (f[2] || "").trim(), pair: (f[3] || "").trim() };
+    const r = { set: Math.floor(id / 100), slot: id % 100, tag: (f[1] || "").trim(), it: (f[2] || "").trim(), pair: (f[3] || "").trim(), hide: (f[6] || "").trim() === "1" };
     tagRows.push(r);
     if (/^\d+$/.test(r.it) && !tagSlot.has(r.it)) tagSlot.set(r.it, { slot: r.slot, second: false });
     if (/^\d+$/.test(r.pair) && !tagSlot.has(r.pair)) tagSlot.set(r.pair, { slot: r.slot, second: true });
@@ -2121,7 +2132,7 @@ function setPieces(rows, set) {
   return out;
 }
 async function setBodySet(set) {
-  dropWorn(); body.set = set || "";
+  dropSet(); body.set = set || "";
   if (!set) return "";
   const pieces = setPieces(await readTags(), +set), missing = [];
   for (const r of pieces) for (const [it, second] of [[r.it, false], [r.pair, true]]) {
@@ -2133,8 +2144,9 @@ async function setBodySet(set) {
     const model = readMOD(f.bytes); let mesh;
     texScope = { files, id: line.arc.toLowerCase() }; try { mesh = buildMesh(model); } finally { texScope = null; }
     mesh.userData = { model, slot: r.slot, second, it };
-    root.add(mesh); body.worn.push({ mesh, model, files, arc: line.arc.toLowerCase() });
+    root.add(mesh); body.worn.push({ mesh, model, files, arc: line.arc.toLowerCase(), hide: r.hide });
   }
+  applyBodyMats();
   return `Set ${set}: ${pieces.map(r => SLOT_NAMES[r.slot] || r.slot).join(", ") || "no pieces for this race"}` + (missing.length ? `. Missing: ${missing.join(", ")}` : "");
 }
 async function bodyPanel() {
@@ -2715,7 +2727,9 @@ $("body").addEventListener("change", async e => {
 });
 $("bodyAnim").addEventListener("change", e => { setBodyAnim(e.target.value); arrange(); });
 $("bodyTex").addEventListener("change", async e => { e.target.disabled = true;
-  try { await setBodyTexture(e.target.value); } catch (err) { $("bodySetInfo").textContent = `Armor texture: ${err.message}`; }
+  try { await setBodyTexture(e.target.value);
+    if (body.luclin && +e.target.value >= 10 && +e.target.value <= 16) $("bodySetInfo").textContent = "Robe textures only cover the chest and arms of Luclin bodies; in RoF2 the skirt is a model in the Robe slot. Pick a robe set (116–121, genericclothrobe*.eqg) under Hero's Forge set for the full robe."; }
+  catch (err) { $("bodySetInfo").textContent = `Armor texture: ${err.message}`; }
   e.target.disabled = false; arrange(); });
 $("bodySet").addEventListener("change", async e => { e.target.disabled = true;
   try { $("bodySetInfo").textContent = (await setBodySet(e.target.value)) || "No set."; } catch (err) { $("bodySetInfo").textContent = `Set: ${err.message}`; }
