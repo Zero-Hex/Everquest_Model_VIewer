@@ -64,23 +64,30 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
 
   On a race body, items go on its `R_POINT`, `L_POINT`, `SHIELD_POINT` and
   `HEAD_POINT` (on Drakkin, the `ARMR_WEAP`, `ARML_WEAP`, `ARML_SHLD` and
-  `HEAD_HEAD` bones), as in game. The last body, set, armor texture and
-  animation are remembered in the browser and come back when the figure is
-  turned on.
+  `HEAD_HEAD` bones), as in game. **Hand** picks where the selected weapon
+  goes: Primary (right hand, an added item in the left), Secondary (left
+  hand) or Both (the same weapon in each hand); shields stay on the shield
+  arm. A point's scale applies to what hangs on it, so a gnome's weapons are
+  drawn smaller and an ogre's larger. The last body, set, armor texture,
+  animation and hand are remembered in the browser and come back when the
+  figure is turned on.
 - **Body panel** (for race bodies):
   - **Animation:** every animation the client has for the race, grouped as
     combat, movement, idle, poses, social and casting (`C08` is 1H
     slashing, `C03` 2H slashing, and so on). Races with no set of their own
     use the one the client shares with them, the way the stock data does.
+    With **Loop** off, an animation plays once and the body goes back to
+    standing; **Play** runs it again.
   - **Armor texture:** None, leather, chain, plate, monk, robes, and Velious
     materials when `global<NN>_amr.s3d` is in the folder. Each page comes
     from the race's own WLD material (`HUMCH0303_MDF`), which names the
     skin page and an armor page drawn over it (`humchsk03.dds` +
     `humch0203.dds_layer`): the armor's alpha says where it covers, and the
     skin shows where it is clear. Some point elsewhere: a Luclin plate
-    chest is the chain chest's sprite, so there are no `ch03` files. Material 00 is the default clothing (a human's vest and
-    trousers, an Iksar's harness), so None is not naked. Classic bodies swap
-    the whole page.
+    chest is the chain chest's sprite, so there are no `ch03` files.
+    Material 00 is the default clothing (a human's vest and trousers, an
+    Iksar's harness), so None is not naked. Classic bodies swap the whole
+    page.
   - **Hero's Forge set:** pick a set number. The pieces for that race are found
     through `NewArmorTagData.txt` and `OnDemandResources.txt`, put on the
     body and follow the animation. An armor piece you have open takes its
@@ -91,8 +98,8 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
     a worn piece close by, so skin in real gaps (between froglok leg pads)
     stays. A checkbox turns this off. A helm without Show Hair hides head
     page 06 (a human's ears, an Iksar's spikes), and a Hero's Forge chest,
-    legs or robe replaces a Drakkin's outfit parts. Luclin females use `LF` rows. Drakkin use the
-    tag file's `N` rows. Pieces hung on a point (helms, bracers,
+    legs or robe replaces a Drakkin's outfit parts. Luclin females use `LF`
+    rows. Drakkin use the tag file's `N` rows. Pieces hung on a point (helms, bracers,
     gloves) get the race's fit from `NewArmorAdjData.txt` (scale, offset and
     rotation per point) unless their tag row says Ignore Adjustment (-1).
     The angles are read Z-Y-X with X negated, which turns barbarian, gnome
@@ -103,6 +110,11 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
 - **Find:** open any item by ID through `OnDemandResources.txt`, by archive
   name, or by actor name inside the `.s3d` equipment archives.
 - **Recently opened:** reopen models you looked at before.
+- **Friendly names:** give a model a name of your own in Selected model
+  (`IT62600` → "Molten Blade"). Names show in the model list, Recently
+  opened, Find and on the view, Find searches them, and **Export names** /
+  **Import names…** move them between browsers or share them as a `.json`
+  file.
 - **Compare:** two models side by side, with cameras linked or separate, effects on
   both sides and a stats table.
 - **Export:**
@@ -127,12 +139,24 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   Click a finding to open the model.
 - **Viewing:** full screen, a phone layout, adjustable light direction and a
   Rotate 90° button for sideways `.s3d` items.
+- **Backdrop:** black, grey or the page colour, or a character-select zone
+  from your client folder: `load.s3d` (the marble room) or `load2.s3d`, with
+  their placed objects from `load_obj.s3d` / `load2_obj.s3d`. `load2` holds
+  several scenes (a library, a distillery, a great hall and more); **Scene**
+  picks one, and the figure stands on its floor.
+- **Sidebar:** sections remember whether you folded them, and **Sections**
+  hides the ones you don't use. Both are kept in the browser.
 
 ## Browser support
 
 Any current desktop browser. Picking a whole folder (Client folder…) needs a
 desktop browser; iPhone and iPad browsers can only open single files. In
-Chromium-based browsers the picked folder is remembered between visits.
+Chrome and Edge the picked folder is remembered: on your next visit a
+**Reconnect** button opens it again after one permission prompt. Firefox and
+Safari can't keep a folder between visits, and no browser allows it when
+the page is embedded in another site, so there you pick the folder again.
+Everything the page remembers (names, sections, body choices) stays in that
+browser's storage on your computer.
 
 ## How accurate is it?
 

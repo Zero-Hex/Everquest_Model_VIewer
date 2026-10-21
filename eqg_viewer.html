@@ -153,6 +153,8 @@ label.field select { width: 100%; min-width: 0; }
 .menupop button { text-align: left; border: 0; background: transparent; padding: 7px 8px; border-radius: 5px; font-weight: 500; }
 .menupop button:hover { background: var(--sel); }
 .menupop .sub { display: block; font-size: 12px; color: var(--muted); font-weight: 400; }
+.menupop .toggle { padding: 4px 8px; }
+details.sec.userhide { display: none !important; }
 .cmptable { width: 100%; border-collapse: collapse; font-size: 13px; }
 .cmptable th, .cmptable td { text-align: left; padding: 3px 6px 3px 0; vertical-align: top; overflow-wrap: anywhere; }
 .cmptable th { color: var(--muted); font-weight: 500; }
@@ -213,6 +215,8 @@ label.field select { width: 100%; min-width: 0; }
         <summary class="label">Body</summary>
         <p class="hint" id="bodyInfo"></p>
         <label class="field" for="bodyAnim">Animation <select id="bodyAnim"></select></label>
+        <div class="ccrow"><label class="toggle" title="Off: the animation plays once, then the body goes back to standing"><input type="checkbox" id="animLoop" checked> Loop</label>
+          <button class="small" id="animPlay" title="Play the animation again from the start">Play</button></div>
         <label class="field" for="bodyTex">Armor texture <select id="bodyTex"></select></label>
         <label class="field" for="bodySet">Hero's Forge set <select id="bodySet"></select></label>
         <label class="toggle"><input type="checkbox" id="bodyHide" checked> Hide the body under armor</label>
@@ -255,7 +259,10 @@ label.field select { width: 100%; min-width: 0; }
       </details>
       <details class="sec" open data-sec="selected-model">
         <summary class="label">Selected model</summary>
+        <div class="ccrow" id="nameRow" hidden><input id="friendlyName" type="text" placeholder="Friendly name (kept in this browser)" aria-label="Friendly name for this model" maxlength="80"></div>
         <dl id="modelInfo"></dl>
+        <div class="ccrow"><button class="small" id="namesExport" title="Save your friendly names as a .json file, to keep or share">Export names</button>
+          <label class="btn small" for="namesImport" title="Add friendly names from a .json file exported here">Import names…<input id="namesImport" type="file" accept=".json,application/json"></label></div>
       </details>
       <details class="sec" open data-sec="materials">
         <summary class="label">Materials</summary>
@@ -282,6 +289,8 @@ label.field select { width: 100%; min-width: 0; }
         <button id="spin" aria-pressed="false" title="Turntable rotation">Turntable</button>
         <label class="toggle" for="figure" title="Show the item on a stand-in figure. Holding: the selected item in the right hand, the first added one in the left (shields on the forearm). Wearing: armor pieces in body position.">Figure
           <select id="figure"><option value="off">Off</option><option value="hold">Holding</option><option value="wear">Wearing</option></select></label>
+        <label class="toggle" for="hand" id="handwrap" hidden title="Which hand holds the selected weapon. Primary: right hand (an added item goes in the left). Secondary: left hand. Both: the same weapon in each hand. Shields stay on the shield arm.">Hand
+          <select id="hand"><option value="primary">Primary</option><option value="secondary">Secondary</option><option value="both">Both</option></select></label>
         <label class="toggle" for="body" id="bodywrap" hidden title="The body: a stick figure, or a race model from your client folder's global*_chr.s3d (or an open *_chr.s3d). Items go on its attachment points, as in game.">Body
           <select id="body"><option value="stick">Stick figure</option></select></label>
         <button id="compare" aria-pressed="false" title="Pin this model to the right half, then open another on the left (C)">Compare</button>
@@ -295,6 +304,8 @@ label.field select { width: 100%; min-width: 0; }
             <button data-export="textures">All textures as PNG<span class="sub">one .zip, top level of each texture</span></button>
             <button data-export="glb">Model as glTF (.glb)<span class="sub">for Blender and other tools; zipped inside claude.ai</span></button>
           </div></details>
+        <details class="menu" id="secMenu"><summary class="btn" title="Choose which sidebar sections to show">Sections</summary>
+          <div class="menupop" id="secPop"></div></details>
         <button id="roll" title="Turn the item a quarter turn on screen (R). Old .s3d items are built lying along X, so shields show up sideways.">Rotate 90°</button>
         <span id="animwrap" hidden><label class="toggle" for="anim">Animation <select id="anim"></select></label></span>
         <button id="optsBtn" aria-expanded="false" aria-controls="opts">Options</button>
@@ -314,6 +325,7 @@ label.field select { width: 100%; min-width: 0; }
         <button id="lightReset" title="Put the light back where the in-game preview has it">Reset light</button>
         <label class="toggle" for="backdrop">Backdrop
           <select id="backdrop"><option value="black" selected>Black (in-game)</option><option value="grey">Grey</option><option value="theme">Page colour</option></select></label>
+        <label class="toggle" for="zoneSpot" id="zoneSpotWrap" hidden title="Where in the zone the figure stands">Scene <select id="zoneSpot"></select></label>
         </div>
         <span class="sep"></span>
         <span class="hint hint-mouse">Drag to rotate · right-drag or Shift-drag to pan · wheel to zoom · R to turn 90° · C to compare · L to link or separate the halves · F for full screen</span>
@@ -1112,11 +1124,13 @@ const axes = new THREE.AxesHelper(1); axes.visible = false; scene.add(axes);
 const root = new THREE.Group(); root.rotation.x = -Math.PI / 2; scene.add(root);
 let current = null, archive = null, archiveName = "", currentKey = "", spinning = false;
 const texCache = new Map(), texErrors = new Map();
+const zoneState = { name: "", group: null, spots: [], ground: null, busy: false, templates: [] }; // backdrop zone (see setZone)
 
 // The viewport backdrop follows the page theme (--stage).
 function applyStageColor() {
   const mode = $("backdrop") ? $("backdrop").value : "theme";
-  const c = mode === "black" ? "#000000" : mode === "grey" ? "#6b6d72" :
+  if (typeof setZone === "function") setZone(mode.startsWith("zone:") ? mode.slice(5) : "");
+  const c = mode === "black" || mode.startsWith("zone:") ? "#000000" : mode === "grey" ? "#6b6d72" :
     (getComputedStyle(document.documentElement).getPropertyValue("--stage").trim() || "#2a2d33");
   renderer.setClearColor(new THREE.Color(c), 1);
 }
@@ -1342,7 +1356,7 @@ function frame(obj) {
   // Fit the narrower direction too (a long weapon on a portrait phone).
   const vHalf = THREE.MathUtils.degToRad(camera.fov / 2), hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
   const dist = radius / Math.sin(Math.min(vHalf, hHalf)) * 1.05;
-  camera.near = dist / 200; camera.far = dist * 50; camera.updateProjectionMatrix();
+  camera.near = dist / 200; camera.far = Math.max(dist * 50, zoneState.group ? 6000 : 0); camera.updateProjectionMatrix();
   camera.position.copy(center).add(new THREE.Vector3(0.55, 0.35, 0.75).normalize().multiplyScalar(dist));
   controls.target.copy(center); controls.update();
   axes.scale.setScalar(radius * 0.6); axes.position.copy(center);
@@ -1486,7 +1500,7 @@ function listArchive() {
     try { const dv = new DataView(f.bytes.buffer, f.bytes.byteOffset); meta = `${dv.getUint32(20, true).toLocaleString()} tris`; } catch (e) {}
     const li = document.createElement("li"), b = document.createElement("button");
     b.innerHTML = `<span class="name"></span><span class="meta"></span>`;
-    b.firstChild.textContent = f.name; b.lastChild.textContent = meta;
+    b.dataset.label = f.name.replace(/\.mod$/i, "").toUpperCase(); b.firstChild.textContent = withName(b.dataset.label); b.lastChild.textContent = meta;
     b.addEventListener("click", () => openModel(f.name.toLowerCase()));
     b.dataset.key = f.name.toLowerCase();
     li.className = "row"; li.append(b, addButton(f.name.toLowerCase(), f.name)); ul.append(li);
@@ -1500,7 +1514,7 @@ function listArchive() {
   for (const e of wldList) {
     const li = document.createElement("li"), b = document.createElement("button");
     b.innerHTML = `<span class="name"></span><span class="meta"></span>`;
-    b.firstChild.textContent = e.label; b.lastChild.textContent = `${e.tris.toLocaleString()} tris`;
+    b.dataset.label = e.label; b.firstChild.textContent = withName(e.label); b.lastChild.textContent = `${e.tris.toLocaleString()} tris`;
     b.addEventListener("click", () => openModel(e.key));
     b.dataset.key = e.key;
     li.className = "row"; li.append(b, addButton(e.key, e.label)); ul.append(li);
@@ -1533,8 +1547,9 @@ function openModel(key, keepView) {
   const f = we ? null : archive.get(key); if (!we && !f) return;
   currentKey = key;
   document.querySelectorAll("#models button").forEach(b => b.setAttribute("aria-current", b.dataset.key === key ? "true" : "false"));
-  const label = we ? we.label : f.name;
-  try { show(we ? we.build() : readMOD(f.bytes), `${archiveName} › ${label}`, keepView); listAnimations(key); buildEffects(); syncExtraButtons(); $("arcInfo").classList.remove("err");
+  const label = we ? we.label : f.name.replace(/\.mod$/i, "").toUpperCase();
+  currentName = nameKey(label); $("nameRow").hidden = false; $("friendlyName").value = friendly[currentName] || "";
+  try { show(we ? we.build() : readMOD(f.bytes), `${archiveName} › ${withName(label)}`, keepView); listAnimations(key); buildEffects(); syncExtraButtons(); $("arcInfo").classList.remove("err");
         addRecent({ arc: archiveName, key: we ? null : key, label: we ? we.label : f.name.replace(/\.mod$/i, "").toUpperCase() }); }
   catch (e) { $("arcInfo").textContent = `${label}: ${e.message}`; $("arcInfo").classList.add("err"); }
 }
@@ -1609,7 +1624,7 @@ async function loadClientEntries(entries, rootName) {
   $("find").placeholder = `Find in ${client.name || "client"}: IT10810, 10810, archive…`;
   $("arcInfo").classList.remove("err");
   $("arcInfo").textContent = `${client.name}: ${client.archives.size} archives` + (reg ? ", OnDemandResources.txt loaded" : ", no Resources/OnDemandResources.txt") + ". Use Find to open an item.";
-  renderRecent(); bodyOptions(); readTags().then(() => arrange()).catch(() => {});
+  renderRecent(); bodyOptions(); zoneOptions(); readTags().then(() => arrange()).catch(() => {});
 }
 async function walkClientHandle(dir) {
   const out = [], root = dir.name;
@@ -1683,6 +1698,12 @@ function findResults(q) {
     for (const w of wldList) if (w.label.toUpperCase().startsWith(Q)) push({ label: w.label, sub: archiveName + " (open)", arc: archiveName, key: w.key });
   }
   const ql = q.trim().toLowerCase();
+  // Your friendly names, anywhere in the name.
+  for (const [k, n] of Object.entries(friendly)) if (n.toLowerCase().includes(ql)) {
+    const r = registry && registry.rows.find(r => r.kind === "EQGM" && nameKey(r.file) === k);
+    if (r) push({ label: k, sub: r.arc, arc: r.arc, key: r.file.toLowerCase() });
+    else if (archive && archive.has(k.toLowerCase() + ".mod")) push({ label: k, sub: archiveName + " (open)", arc: archiveName, key: k.toLowerCase() + ".mod" });
+  }
   for (const [k, e] of client.archives) if (k.includes(ql)) push({ label: e.name, sub: "archive", arc: e.name, key: null });
   return out.slice(0, 60);
 }
@@ -1694,7 +1715,7 @@ function renderFind() {
   res.forEach((r, i) => {
     const li = document.createElement("li"), b = document.createElement("button");
     b.innerHTML = '<span class="name"></span><span class="sub"></span>';
-    b.firstChild.textContent = r.label; b.lastChild.textContent = r.sub; if (i === findActive) b.classList.add("active");
+    b.firstChild.textContent = r.key ? withName(r.label) : r.label; b.lastChild.textContent = r.sub; if (i === findActive) b.classList.add("active");
     b.addEventListener("click", () => { ul.hidden = true; openResult(r); });
     li.append(b); ul.append(li);
   });
@@ -1828,6 +1849,21 @@ async function runClientChecks() {
        (failed.length ? `; ${failed.length} archives couldn't be read (${failed.slice(0, 3).join(", ")}${failed.length > 3 ? "…" : ""})` : "") + ".");
 }
 
+// Friendly names for models (IT62600 -> "Molten Blade"), kept in this browser;
+// Export / Import move them between browsers as a .json file.
+const NAMES_KEY = "eqg-viewer.names.v1";
+let friendly = (() => { try { return JSON.parse(localStorage.getItem(NAMES_KEY) || "{}") || {}; } catch (e) { return {}; } })();
+let currentName = "";                                   // name key of the open model
+const nameKey = s => String(s || "").replace(/\.mod$/i, "").toUpperCase();
+const withName = s => { const n = friendly[nameKey(s)]; return n ? `${n} · ${s}` : s; };
+function saveNames() { try { localStorage.setItem(NAMES_KEY, JSON.stringify(friendly)); } catch (e) {} refreshNames(); }
+function refreshNames() {
+  document.querySelectorAll("#models button[data-label]").forEach(b => { b.firstChild.textContent = withName(b.dataset.label); });
+  renderRecent();
+  if (currentName) { $("friendlyName").value = friendly[currentName] || "";
+    $("badge").textContent = $("badge").textContent.replace(/ › .*?( \+ \d+ more)?$/, (m, more) => ` › ${withName(currentName)}${more || ""}`); }
+}
+
 // Recently opened: per-browser convenience in localStorage (may be unavailable).
 const RECENT_KEY = "eqg-viewer.recent.v1";
 function readRecent() { try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch (e) { return []; } }
@@ -1845,7 +1881,7 @@ function renderRecent() {
     const li = document.createElement("li"), b = document.createElement("button");
     b.innerHTML = '<span class="name"></span><span class="meta"></span>';
     const reachable = client.archives.has(r.arc.toLowerCase()) || (archive && archiveName.toLowerCase() === r.arc.toLowerCase());
-    b.firstChild.textContent = r.label; b.lastChild.textContent = ago(r.t);
+    b.firstChild.textContent = withName(r.label); b.lastChild.textContent = ago(r.t);
     b.title = `${r.arc}${reachable ? "" : " — open this archive (or pick your client folder) to reopen it"}`;
     b.addEventListener("click", () => {
       if (reachable) openResult({ arc: r.arc, key: r.key || r.label });
@@ -1974,8 +2010,8 @@ const EQG_ANIM_NAMES = { stnd: "Stand", idle: "Idle", idla: "Idle", walk: "Walk"
 const conjTrs = (pos, q, sc) => trs(pos, [-q[0], -q[1], -q[2], q[3]], sc);
 const BODY_KEY = "eqg-viewer.body.v1";   // per-browser: last body, set, texture, animation
 const bodyPrefs = () => { try { return JSON.parse(localStorage.getItem(BODY_KEY) || "{}") || {}; } catch (e) { return {}; } };
-function saveBodyPrefs() { try { localStorage.setItem(BODY_KEY, JSON.stringify({ value: body.value, set: body.set, mm: body.mm, anim: body.animKey, hide: body.hideMesh, colors: body.colors })); } catch (e) {} }
-const body = { parts: [], colors: Object.assign({ hair: "#5a3a26", tattoo: "#d0542c" }, bodyPrefs().colors || {}), kind: "wld", nge: false, hideMesh: bodyPrefs().hide !== false, value: "stick", label: "", arc: "", files: null, model: null, mesh: null, points: {}, box: null, code: "",
+function saveBodyPrefs() { try { localStorage.setItem(BODY_KEY, JSON.stringify({ value: body.value, set: body.set, mm: body.mm, anim: body.animKey, hide: body.hideMesh, colors: body.colors, loop: body.loop })); } catch (e) {} }
+const body = { loop: bodyPrefs().loop !== false, idleKey: "", playingKey: "", animDur: 0, parts: [], colors: Object.assign({ hair: "#5a3a26", tattoo: "#d0542c" }, bodyPrefs().colors || {}), kind: "wld", nge: false, hideMesh: bodyPrefs().hide !== false, value: "stick", label: "", arc: "", files: null, model: null, mesh: null, points: {}, box: null, code: "",
   bones: null, suffix: [], boneIdx: new Map(), rest: [], restInv: [], world: [], anims: new Map(), animKey: "", anim: null, animStart: 0, moving: false,
   baseMats: null, mm: "00", texFiles: null, worn: [], set: "", links: [], skinned: [] };
 const arcCache = new Map();
@@ -2060,8 +2096,9 @@ async function setBody(value) {
   if (arc.endsWith(".eqg")) await loadEqgBody(value, arc, arcName, code, files); else await loadWldBody(value, arc, arcName, code, files);
   dropWorn();
   await setBodyTexture(body.mms.includes(keep.mm) ? keep.mm : "00");
-  const pick = [keep.anim, "P01", "P01A", "P01B", "O01", "O01A", "stnd_ba_1", "idle_ba_1"].find(k => k && body.anims.has(k)) || "";
-  setBodyAnim(pick);
+  const idles = ["P01", "P01A", "P01B", "O01", "O01A", "stnd_ba_1", "idle_ba_1"];
+  body.idleKey = idles.find(k => body.anims.has(k)) || "";
+  setBodyAnim([keep.anim, ...idles].find(k => k && body.anims.has(k)) || "");
   if (keep.set) { const rows = await readTags(); if (setPieces(rows, +keep.set).length) { try { $("bodySetInfo").textContent = await setBodySet(keep.set); } catch (e) {} } }
   bodyPanel(); saveBodyPrefs();
 }
@@ -2262,9 +2299,15 @@ function applyBodyMats() {
   body.model.tris = body.allTris; body.model.nTri = body.allTris.length; body.coverDirty = true;
   buildBodyMesh();
 }
+// The chosen animation (body.animKey) loops, or with Loop off plays once and
+// hands over to the standing animation (body.idleKey) until Play.
 function setBodyAnim(key) {
+  body.animKey = key && body.anims.has(key) ? key : "";
+  playBodyAnim(body.animKey);
+}
+function playBodyAnim(key) {
   const A = key && body.anims.get(key);
-  body.animKey = A ? key : "";
+  body.playingKey = A ? key : "";
   if (body.kind === "eqg") {
     try { body.anim = A ? readANI(A.file.bytes) : null; } catch (e) { body.anim = null; }
     body.moving = !!body.anim;
@@ -2272,6 +2315,7 @@ function setBodyAnim(key) {
     body.anim = A ? body.bones.map((b, i) => { const ref = A.tracks.get(body.suffix[i]); return (ref && decodeTrack(ref.w, ref.frag)) || null; }) : null;
     body.moving = !!(body.anim && body.anim.some(t => t && t.frames.length > 1));
   }
+  body.animDur = !body.anim ? 0 : body.kind === "eqg" ? body.anim.duration : Math.max(0, ...body.anim.map(t => t ? t.frames.length * t.sleep : 0));
   body.animStart = performance.now();
   poseBody(body.animStart);
 }
@@ -2279,6 +2323,9 @@ function setBodyAnim(key) {
 const _q = new THREE.Quaternion(), _t = new THREE.Vector3(), _s = new THREE.Vector3();
 function poseBody(now) {
   if (!body.model) return;
+  if (!body.loop && body.playingKey && body.playingKey !== body.idleKey && now - body.animStart >= body.animDur) {
+    playBodyAnim(body.idleKey); return;
+  }
   const t = now - body.animStart;
   const local = body.kind === "eqg" ? body.bones.map((b, i) => {
     const keys = body.anim && body.anim.tracks.get(b.name);
@@ -2427,16 +2474,26 @@ async function bodyPanel() {
 function attach(mesh, m) { m.decompose(mesh.position, mesh.quaternion, mesh.scale); mesh.updateMatrixWorld(true); }
 function place(mesh, pos, rotY) { mesh.position.set(...pos); mesh.rotation.set(0, rotY || 0, 0); mesh.scale.set(1, 1, 1); mesh.updateMatrixWorld(true); }
 function restGeometry(m) { const g = m.geometry, md = m.userData.model; if (md && md.nBone && !(skin && skin.mesh === m)) { g.attributes.position.array.set(md.pos); g.attributes.normal.array.set(md.nrm); g.attributes.position.needsUpdate = g.attributes.normal.needsUpdate = true; } }
+// Hand: Primary puts the selected item in the right hand and an added one in
+// the left; Secondary the other way round; Both puts a copy of the selected
+// item in the left hand too (the copy shares its geometry and materials).
+let dual = null;
+function dualOf(m) {
+  if (!dual || dual.userData.src !== m) { dropDual(); dual = m.clone(); dual.userData = Object.assign({}, m.userData, { src: m }); root.add(dual); }
+  return dual;
+}
+function dropDual() { if (dual) { root.remove(dual); dual = null; } }
 function arrange() {
-  let mode = $("figure").value; const real = mode !== "off" && !!body.mesh;
-  $("bodywrap").hidden = mode === "off"; $("bodySec").hidden = !body.model || mode === "off";
+  let mode = $("figure").value; const real = mode !== "off" && !!body.mesh, hand = $("hand").value;
+  let usedDual = false;
+  $("bodywrap").hidden = mode === "off"; $("handwrap").hidden = mode === "off"; $("bodySec").hidden = !body.model || mode === "off";
   if (mode === "off" || real) { if (figureGroup) figureGroup.visible = false; }
   else { if (!figureGroup) { figureGroup = buildFigure(); root.add(figureGroup); } figureGroup.visible = true; }
   if (body.mesh) body.mesh.visible = real;
   for (const pt of body.parts || []) if (pt.mesh) pt.mesh.visible = real && partShown(pt);
   for (const x of body.worn) x.mesh.visible = real;
   const all = [current, ...extras.values()].filter(Boolean);
-  for (const m of all) { place(m, [0, 0, 0]); restGeometry(m); }
+  for (const m of all) { place(m, [0, 0, 0]); restGeometry(m); m.visible = true; }
   body.links = []; body.skinned = [];
   const link = (mesh, at, fit) => { if (!body.boneIdx.has(at)) return false;
     const adj = fit && POINT_NUM[at] && adjMap.get(`${body.code}|${POINT_NUM[at]}`);
@@ -2457,19 +2514,28 @@ function arrange() {
   // Armor pieces (IT number in NewArmorTagData.txt) know their slot.
   const slotOf = m => { const id = /^it(\d+)\.mod$/i.exec((m === current ? currentKey : m.userData.key) || ""); return id ? tagSlot.get(id[1]) : null; };
   if (mode === "hold" && real && all.some(slotOf)) mode = "wear";      // an armor piece is worn, not held
-  if (mode === "hold" && real) {
-    // Main hand R_POINT; the second item in L_POINT, or SHIELD_POINT for a shield.
-    const [main, second] = all, shieldAt = body.boneIdx.has("SHIELD_POINT") ? "SHIELD_POINT" : "L_POINT";
-    if (main) link(main, isShieldLike(main.userData.model) ? shieldAt : "R_POINT");
-    if (second) link(second, isShieldLike(second.userData.model) ? shieldAt : "L_POINT");
-  } else if (mode === "hold") {
+  // Two held items on body points: R_POINT / L_POINT, SHIELD_POINT for a shield.
+  const holdOnBody = (main, second) => {
+    if (!main) return;
+    const shieldAt = body.boneIdx.has("SHIELD_POINT") ? "SHIELD_POINT" : "L_POINT";
+    const at = (m, right) => isShieldLike(m.userData.model) ? shieldAt : right ? "R_POINT" : "L_POINT";
+    if (hand === "both" && !isShieldLike(main.userData.model)) {
+      link(main, "R_POINT"); link(dualOf(main), "L_POINT"); usedDual = true; if (second) second.visible = false; return; }
+    const right = hand !== "secondary";
+    link(main, at(main, right)); if (second) link(second, at(second, !right));
+  };
+  if (mode === "hold" && real) holdOnBody(all[0], all[1]);
+  else if (mode === "hold") {
     // Old .s3d items lie along X; a flat one (shield) is stood up so X becomes Z.
     const stand = m => m.userData.model.wld && isShieldLike(m.userData.model) ? -Math.PI / 2 : 0;
+    const putIn = (m, right) => { const sh = isShieldLike(m.userData.model);
+      if (sh && right) { place(m, [0, -1.8 - 0.35, 1.85], stand(m)); m.rotation.z = Math.PI; }
+      else if (sh) place(m, [BODY.lForearm[0], BODY.lForearm[1] + 0.35, BODY.lForearm[2]], stand(m));
+      else { const h = right ? BODY.rHand : BODY.lHand; place(m, [h[0] + 0.15, h[1], h[2]], stand(m)); } };
     const [main, second] = all;
-    if (main) { const sh = isShieldLike(main.userData.model);
-      place(main, sh ? [0, -1.8 - 0.35, 1.85] : [BODY.rHand[0] + 0.15, BODY.rHand[1], BODY.rHand[2]], stand(main)); if (sh) main.rotation.z = Math.PI; }
-    if (second) { const sh = isShieldLike(second.userData.model);
-      place(second, sh ? [BODY.lForearm[0], BODY.lForearm[1] + 0.35, BODY.lForearm[2]] : [BODY.lHand[0] + 0.15, BODY.lHand[1], BODY.lHand[2]], stand(second)); }
+    if (main && hand === "both" && !isShieldLike(main.userData.model)) {
+      putIn(main, true); putIn(dualOf(main), false); usedDual = true; if (second) second.visible = false; }
+    else { const right = hand !== "secondary"; if (main) putIn(main, right); if (second) putIn(second, !right); }
   } else if (mode === "wear") {
     // An armor piece (its IT number in NewArmorTagData.txt) takes its slot,
     // hiding the set's piece there; anything else is held, as in Holding.
@@ -2485,10 +2551,10 @@ function arrange() {
       if (!(real && link(m, helm ? "HEAD_POINT" : body.boneIdx.has("GAUNTR_POINT") ? "GAUNTR_POINT" : "R_POINT")))
         place(m, helm ? BODY.head : BODY.rWrist);                   // static: helm on the head, the rest at the wrist
     }
-    const [main, second] = held, shieldAt = body.boneIdx.has("SHIELD_POINT") ? "SHIELD_POINT" : "L_POINT";
-    if (main) link(main, isShieldLike(main.userData.model) ? shieldAt : "R_POINT");
-    if (second) link(second, isShieldLike(second.userData.model) ? shieldAt : "L_POINT");
+    holdOnBody(held[0], held[1]);
   }
+  if (!usedDual) dropDual();
+  placeZone(real, mode);
   if (real) { poseBody(performance.now()); body.coverDirty = true; if (coverHidden()) poseBody(performance.now()); }
   root.updateMatrixWorld(true);
 }
@@ -2976,10 +3042,12 @@ function rollModel() {
 function resetOrientation() { root.position.set(0, 0, 0); root.rotation.set(-Math.PI / 2, 0, 0); root.updateMatrixWorld(true); }
 $("roll").addEventListener("click", rollModel);
 document.querySelectorAll("[data-export]").forEach(b => b.addEventListener("click", () => runExport(b.dataset.export)));
-document.addEventListener("click", e => { if (!e.target.closest("#exportMenu")) $("exportMenu").open = false; });
+document.addEventListener("click", e => { for (const id of ["exportMenu", "secMenu"]) if (!e.target.closest("#" + id)) $(id).open = false; });
 $("texsave").addEventListener("click", () => { if (currentTex) exportTexture(currentTex).catch(e => note(`Export failed: ${e.message}`, true)); });
 $("compare").addEventListener("click", () => cmp ? unpinCompare() : pinCompare());
 $("cmpLink").addEventListener("click", () => { if (cmp) setLinked(!cmp.linked); });
+try { const h = localStorage.getItem("eqg-viewer.hand.v1"); if (h && [...$("hand").options].some(o => o.value === h)) $("hand").value = h; } catch (e) {}
+$("hand").addEventListener("change", () => { try { localStorage.setItem("eqg-viewer.hand.v1", $("hand").value); } catch (e) {} arrange(); });
 $("figure").addEventListener("change", () => {
   // The body picked last time comes back when the figure is turned on.
   const want = bodyPrefs().value;
@@ -2998,6 +3066,9 @@ for (const [id, key] of [["hairColor", "hair"], ["tattooColor", "tattoo"]]) $(id
   saveBodyPrefs(); });
 $("bodyHide").addEventListener("change", e => { body.hideMesh = e.target.checked; if (body.model) applyBodyMats(); arrange(); saveBodyPrefs(); });
 $("bodyAnim").addEventListener("change", e => { setBodyAnim(e.target.value); arrange(); saveBodyPrefs(); });
+$("animLoop").checked = body.loop;
+$("animLoop").addEventListener("change", e => { body.loop = e.target.checked; saveBodyPrefs(); if (body.model) playBodyAnim(body.animKey); });
+$("animPlay").addEventListener("click", () => { if (body.model) playBodyAnim(body.animKey); });
 $("bodyTex").addEventListener("change", async e => { e.target.disabled = true;
   try { await setBodyTexture(e.target.value);
     if (body.luclin && +e.target.value >= 10 && +e.target.value <= 16) $("bodySetInfo").textContent = "Robe textures only cover the chest and arms of Luclin bodies; in RoF2 the skirt is a model in the Robe slot. Pick a robe set (116–121, genericclothrobe*.eqg) under Hero's Forge set for the full robe."; }
@@ -3063,6 +3134,117 @@ document.addEventListener("keydown", e => {
 // back into view after picking a model or texture further down the page.
 const narrow = matchMedia("(max-width: 760px)");
 if (narrow.matches) for (const k of ["selected-model", "materials", "textures"]) document.querySelector(`[data-sec="${k}"]`).open = false;
+// ---------------------------------------------------------------- backdrop zones
+// The character-select zones (load.s3d, load2.s3d, with their *_obj.s3d
+// objects) drawn behind the figure, from the client folder. load is one room
+// around the origin; load2 holds several scenes, found as clusters of its
+// lights, and Scene picks one. The ground under the spot is found by casting a
+// ray down, and the zone is moved so that ground meets the figure's feet.
+const ZONES = [["load", "Character select (load)"], ["load2", "Character select (load2)"]];
+function zoneOptions() {
+  const sel = $("backdrop"); [...sel.options].filter(o => o.value.startsWith("zone:")).forEach(o => o.remove());
+  for (const [z, label] of ZONES) if (client.archives.has(z + ".s3d")) { const o = document.createElement("option"); o.value = "zone:" + z; o.textContent = label; sel.append(o); }
+}
+const wldIn = (files, name) => { const f = files && files.get(name); return f ? (f.w || (f.w = readWLD(f.bytes))) : null; };
+function dropZone() {
+  if (zoneState.group) { zoneState.group.traverse(o => { if (o.isMesh && !o.userData.shared) disposeMesh(o); }); root.remove(zoneState.group); }
+  for (const m of zoneState.templates || []) disposeMesh(m);
+  Object.assign(zoneState, { name: "", group: null, spots: [], ground: null, templates: [] }); $("zoneSpotWrap").hidden = true;
+}
+async function setZone(name) {
+  if (name === zoneState.name || zoneState.busy) return;
+  dropZone(); if (!name) return;
+  zoneState.busy = true; note(`Loading ${name}.s3d…`);
+  try {
+    const files = await clientArc(name + ".s3d"), objFiles = await clientArc(name + "_obj.s3d");
+    const w = wldIn(files, name + ".wld"); if (!w) throw new Error(`no ${name}.wld in ${name}.s3d`);
+    const group = new THREE.Group(), meshes = w.frags.filter(x => x && x.type === 0x36);
+    texScope = { files, id: name + ".s3d" };
+    let ground;
+    try { ground = buildMesh(wldModel(w, meshes.map(m => ({ mesh: m })))); } finally { texScope = null; }
+    group.add(ground);
+    // Placed objects (0x15): actor name, position, rotation in 512ths of a
+    // turn (heading first), scale.
+    const ow = wldIn(files, "objects.wld"), aw = wldIn(objFiles, name + "_obj.wld"), made = new Map();
+    if (ow && aw) for (const x of ow.frags) {
+      if (!x || x.type !== 0x15) continue;
+      const ref = ow.dv.getInt32(x.o + 4, true), actor = ref < 0 ? ow.hstr(-ref) : ""; if (!actor) continue;
+      if (!made.has(actor)) {
+        const a = aw.frags.find(f => f && f.type === 0x14 && f.name === actor); let m = null;
+        if (a) { texScope = { files: objFiles, id: name + "_obj.s3d" };
+          try { const md = wldModel(aw, wldActorParts(aw, a)); if (md.nTri) m = buildMesh(md); } catch (e) {} finally { texScope = null; } }
+        made.set(actor, m);
+      }
+      const tpl = made.get(actor); if (!tpl) continue;
+      const v = k => ow.dv.getFloat32(x.o + 16 + k * 4, true), turn = Math.PI * 2 / 512;
+      const m = tpl.clone(); m.userData.shared = true;
+      m.position.set(v(0), v(1), v(2)); m.rotation.set(v(5) * turn, v(4) * turn, v(3) * turn, "ZYX");
+      const sc = v(7) || v(8) || 1; m.scale.setScalar(sc);
+      group.add(m);
+    }
+    const templates = [...made.values()].filter(Boolean);
+    // Scenes: clusters of point lights (lights.wld 0x28).
+    const lw = wldIn(files, "lights.wld"), pts = [];
+    if (lw) for (const x of lw.frags) if (x && x.type === 0x28) pts.push(new THREE.Vector3(lw.dv.getFloat32(x.o + 12, true), lw.dv.getFloat32(x.o + 16, true), lw.dv.getFloat32(x.o + 20, true)));
+    const clusters = [];
+    for (const p of pts) { const c = clusters.find(c => c.sum.clone().divideScalar(c.n).distanceTo(p) < 150); if (c) { c.sum.add(p); c.n++; } else clusters.push({ sum: p.clone(), n: 1 }); }
+    clusters.sort((a, b) => b.n - a.n);
+    const ray = new THREE.Raycaster(); ground.updateMatrixWorld(true);
+    const spots = (name === "load" ? [new THREE.Vector3(0, 0, 0)] : clusters.filter(c => c.n >= 3).map(c => c.sum.divideScalar(c.n))).map(c => {
+      ray.set(new THREE.Vector3(c.x, c.y, c.z + 40), new THREE.Vector3(0, 0, -1)); ray.far = 400;
+      const hit = ray.intersectObject(ground, false).find(h => h.face);
+      return new THREE.Vector3(c.x, c.y, hit ? hit.point.z : c.z - 20);
+    });
+    if ($("backdrop").value !== "zone:" + name) { disposeMesh(ground); templates.forEach(disposeMesh); note(""); return; }   // changed meanwhile
+    Object.assign(zoneState, { name, group, spots, spot: 0, templates });
+    root.add(group);
+    const sel = $("zoneSpot"); sel.innerHTML = "";
+    spots.forEach((p, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = `${i + 1} · ${Math.round(p.x)}, ${Math.round(p.y)}`; sel.append(o); });
+    $("zoneSpotWrap").hidden = spots.length < 2;
+    note(`${name}.s3d: ${meshes.length} zone meshes, ${group.children.length - 1} objects${spots.length > 1 ? `, ${spots.length} scenes` : ""}.`);
+    arrange(); if (current) frame(current);
+  } catch (e) { note(`Backdrop: ${e.message}`, true); }
+  finally { zoneState.busy = false; }
+}
+// Put the scene's spot under the figure's feet (or under the item).
+function placeZone(real, mode) {
+  const g = zoneState.group; if (!g) return;
+  const spot = zoneState.spots[zoneState.spot] || new THREE.Vector3();
+  let feet = 0;
+  if (real && body.mesh) { body.mesh.geometry.computeBoundingBox(); feet = body.mesh.geometry.boundingBox.min.z; }
+  else if (mode !== "off") feet = -4.2;                               // the stick figure's soles
+  else if (current) feet = modelBox(current.userData.model).min.z;
+  g.position.set(-spot.x, -spot.y, feet - spot.z);
+}
+$("zoneSpot").addEventListener("change", e => { zoneState.spot = +e.target.value || 0; arrange(); });
+$("friendlyName").addEventListener("change", e => {
+  if (!currentName) return; const n = e.target.value.trim();
+  if (n) friendly[currentName] = n; else delete friendly[currentName]; saveNames(); });
+$("namesExport").addEventListener("click", () => saveFile("eqg-viewer-names.json", new Blob([JSON.stringify(friendly, null, 1)], { type: "application/json" })));
+$("namesImport").addEventListener("change", async e => {
+  const file = e.target.files[0]; e.target.value = ""; if (!file) return;
+  try { const add = JSON.parse(await file.text()); let n = 0;
+    for (const [k, v] of Object.entries(add || {})) if (typeof v === "string" && v.trim() && /^[\w.-]{1,64}$/.test(k)) { friendly[nameKey(k)] = v.trim().slice(0, 80); n++; }
+    saveNames(); note(`Imported ${n} friendly name${n === 1 ? "" : "s"} from ${file.name}.`); }
+  catch (err) { note(`${file.name}: not a names file (${err.message}).`, true); }
+});
+// Sidebar sections: which are folded and which are hidden altogether, kept
+// in this browser (the page works the same without storage).
+const SEC_KEY = "eqg-viewer.sections.v1";
+const secPrefs = (() => { try { return JSON.parse(localStorage.getItem(SEC_KEY) || "{}") || {}; } catch (e) { return {}; } })();
+secPrefs.open = secPrefs.open || {}; secPrefs.hide = secPrefs.hide || {};
+const saveSecPrefs = () => { try { localStorage.setItem(SEC_KEY, JSON.stringify(secPrefs)); } catch (e) {} };
+for (const d of document.querySelectorAll("aside details.sec")) {
+  const k = d.dataset.sec, label = d.querySelector("summary").textContent;
+  if (k in secPrefs.open) d.open = secPrefs.open[k];
+  d.classList.toggle("userhide", !!secPrefs.hide[k]);
+  // Only what you fold yourself is remembered, not the phone layout's defaults.
+  d.querySelector("summary").addEventListener("click", () => setTimeout(() => { secPrefs.open[k] = d.open; saveSecPrefs(); }, 0));
+  const t = document.createElement("label"); t.className = "toggle";
+  t.innerHTML = `<input type="checkbox"${secPrefs.hide[k] ? "" : " checked"}> `; t.append(label);
+  t.querySelector("input").addEventListener("change", e => { secPrefs.hide[k] = !e.target.checked; d.classList.toggle("userhide", secPrefs.hide[k]); saveSecPrefs(); });
+  $("secPop").append(t);
+}
 document.querySelector("aside").addEventListener("click", e => {
   if (narrow.matches && !isFull() && e.target.closest("#models button, #texs button"))
     setTimeout(() => stage.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
