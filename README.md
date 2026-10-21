@@ -44,6 +44,16 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
 
   On a race body, items go on its `R_POINT`, `L_POINT`, `SHIELD_POINT` and
   `HEAD_POINT`, as in game.
+- **Body panel** (for race bodies):
+  - **Animation:** every animation the client has for the race, grouped as
+    combat, movement, idle, poses, social and casting (`C08` is 1H
+    slashing, `C03` 2H slashing, and so on). Races with no set of their own
+    use the one the client shares with them, the way the stock data does.
+  - **Armor texture:** None, leather, chain, plate, monk, robes, and Velious
+    materials when `global<NN>_amr.s3d` is in the folder.
+  - **Hero's Forge set:** pick a set number. The pieces for that race are found
+    through `NewArmorTagData.txt` and `OnDemandResources.txt`, put on the
+    body and follow the animation.
 - **Find:** open any item by ID through `OnDemandResources.txt`, by archive
   name, or by actor name inside the `.s3d` equipment archives.
 - **Recently opened:** reopen models you looked at before.
