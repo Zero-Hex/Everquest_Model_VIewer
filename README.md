@@ -1,6 +1,6 @@
-# EQG Model Viewer
+# EQ Model Viewer
 
-A browser tool for looking at EverQuest Rain of Fear 2 (RoF2) client models
+A browser tool for looking at EverQuest client models
 outside the game. Open an `.eqg` or `.s3d` archive, or point it at your
 EverQuest folder, and inspect items, armor and characters roughly the way
 the client draws them. Pre-flight checks catch the mistakes that make custom
