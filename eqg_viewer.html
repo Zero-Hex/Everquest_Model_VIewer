@@ -631,7 +631,9 @@ function wldMaterial(w, f) {
   const kind = low === 0 ? "invisible" : low === 0x13 ? "cutout" : [0x05, 0x0A, 0x0B].includes(low) ? "translucent"
     : [0x09, 0x12, 0x17, 0x19, 0x31].includes(low) ? "glow" : "opaque";
   const opacity = low === 0x0A ? 0.25 : low === 0x05 ? 0.5 : low === 0x0B ? 0.75 : 1;
-  const files = []; let delay = 0;
+  // A bitmap 0x03 can list more than one file: Luclin bodies list the skin
+  // page and then the armor page drawn over it ("humch0201.dds_layer").
+  const files = []; let delay = 0, layer = null;
   const f5 = wRef(w, f.o + 24, 0x05), f4 = f5 && wRef(w, f5.o + 4, 0x04);
   if (f4) {
     const fl = wU32(w, f4.o + 4), n = wU32(w, f4.o + 8); let q = f4.o + 12;
@@ -639,12 +641,16 @@ function wldMaterial(w, f) {
     if (fl & 8) { delay = wU32(w, q); q += 4; }
     for (let k = 0; k < n && k < 256; k++) {
       const f3 = wRef(w, q + k * 4, 0x03); if (!f3) continue;
-      const len = wU16(w, f3.o + 8); let s = "";
-      for (let i = 0; i < len; i++) { const c = w.bytes[f3.o + 10 + i] ^ WLD_KEY[i % 8]; if (!c) break; s += String.fromCharCode(c); }
-      files.push(s.toLowerCase());
+      const names = Math.min(wU32(w, f3.o + 4) + 1, 8); let p = f3.o + 8;
+      for (let j = 0; j < names && p + 2 <= f3.o + f3.size; j++) {
+        const len = wU16(w, p); let s = "";
+        for (let i = 0; i < len; i++) { const c = w.bytes[p + 2 + i] ^ WLD_KEY[i % 8]; if (!c) break; s += String.fromCharCode(c); }
+        p += 2 + len; s = s.toLowerCase();
+        if (j === 0) files.push(s); else if (s.endsWith("_layer") && !layer) layer = s.slice(0, -6);
+      }
     }
   }
-  return { name: f.name, rm, kind, opacity, files, delay };
+  return { name: f.name, rm, kind, opacity, files, delay, layer };
 }
 
 // Mesh 0x36: header to +96, then vertices (i16 x3 << scale, + centre),
@@ -2074,7 +2080,7 @@ async function loadEqgBody(value, arc, arcName, code, files) {
   const mms = [...new Set([...files.keys()].map(k => new RegExp(`^${lc}_(\\d\\d)_00_.+\\.mod$`).exec(k)).filter(Boolean).map(m => m[1]))].sort();
   if (body.mesh) disposeMesh(body.mesh);
   dropParts();
-  Object.assign(body, { allTris: model.tris, kind: "eqg", nge: true, luclin: false, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones,
+  Object.assign(body, { allTris: model.tris, kind: "eqg", nge: true, luclin: false, matDefs: null, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones,
     suffix: [], boneIdx, rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims: new Map([...anims].sort((x, y) => x[0].localeCompare(y[0]))),
     mms: mms.length ? mms : ["00"], baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
 }
@@ -2146,9 +2152,16 @@ async function loadWldBody(value, arc, arcName, code, files) {
   const mms = new Set(["00"]), lc = code.toLowerCase();
   for (const k of files.keys()) { const m = new RegExp(`^${lc}[a-z]{2}(\\d\\d)\\d\\d\\.(bmp|dds)$`).exec(k); if (m) mms.add(m[1]); }
   for (const k of client.archives.keys()) { const m = /^global(\d\d)_amr\.s3d$/.exec(k); if (m) mms.add(m[1]); }
+  // The WLD's own body materials, <RACE><PART><MM><page>_MDF, for every
+  // armor material, worn or not: their bitmaps say what the client draws
+  // (the Luclin plate chest is the chain chest's sprite, for one).
+  const matDefs = new Map();
+  for (const x of w.frags) if (x && x.type === 0x30 && x.name.startsWith(code) && x.name.endsWith("_MDF")) {
+    const wm = wldMaterial(w, x); if (!wm.files.length) continue; matDefs.set(x.name.toUpperCase(), wm);
+    const m = new RegExp(`^${code}[A-Z]{2}(\\d\\d)\\d\\d_MDF$`, "i").exec(x.name); if (m) mms.add(m[1]); }
   if (body.mesh) disposeMesh(body.mesh);
   Object.assign(body, { allTris: model.tris, kind: "wld", nge: false, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones, suffix, boneIdx,
-    rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims, mms: [...mms].sort(), luclin,
+    rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims, mms: [...mms].sort(), luclin, matDefs,
     baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
 }
 async function setBodyTexture(mm) {
@@ -2229,12 +2242,15 @@ function applyBodyMats() {
   // The material name says the slot (HUMCH0001_MDF = chest, page 01); its
   // file can be a skin texture (humchsk01.dds on Luclin bodies), so the
   // armor file is built from the name: humch<NN>01.
-  // On Luclin bodies (.dds) the armor page is drawn over the skin page; on
-  // classic ones (.bmp, no alpha) it replaces it. Material 00 has no classic
-  // pages: the body's own textures are the default.
+  // The race's own material for the armor (HUMCH0303_MDF) says what to draw:
+  // on Luclin bodies the skin page with the armor page over it ("_layer";
+  // its alpha says where it covers). Otherwise the file is built from the
+  // name: on Luclin bodies (.dds) drawn over the skin page, on classic ones
+  // (.bmp, no alpha) replacing it. Material 00 has no classic pages.
   const swap = (matName, file) => { const m = new RegExp(`^(${lc}[a-z]{2})(\\d\\d)(\\d\\d)_MDF$`, "i").exec(matName || "");
     if (!m || m[1].toLowerCase().endsWith("he")) return file;   // the head follows the helm, not the armor
-    const n = `${m[1].toLowerCase()}${mm}${m[3]}`;
+    const n = `${m[1].toLowerCase()}${mm}${m[3]}`, def = body.matDefs && body.matDefs.get(`${n}_MDF`.toUpperCase());
+    if (def && has(def.files[0])) return def.layer && has(def.layer) ? `${def.files[0]}+${def.layer}` : def.files[0];
     if (/\.dds$/i.test(file || "") && has(n + ".dds")) return n + ".dds" === (file || "").toLowerCase() ? file : `${file}+${n}.dds`;
     if (mm !== "00") for (const ext of ["dds", "bmp"]) if (has(`${n}.${ext}`)) return `${n}.${ext}`;
     return file; };

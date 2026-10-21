@@ -73,10 +73,12 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
     slashing, `C03` 2H slashing, and so on). Races with no set of their own
     use the one the client shares with them, the way the stock data does.
   - **Armor texture:** None, leather, chain, plate, monk, robes, and Velious
-    materials when `global<NN>_amr.s3d` is in the folder. On Luclin bodies
-    an armor page is drawn over the skin page (`humch0201.dds` over
-    `humchsk01.dds`): its alpha says where it covers, and the skin shows
-    where it is clear. Material 00 is the default clothing (a human's vest and
+    materials when `global<NN>_amr.s3d` is in the folder. Each page comes
+    from the race's own WLD material (`HUMCH0303_MDF`), which names the
+    skin page and an armor page drawn over it (`humchsk03.dds` +
+    `humch0203.dds_layer`): the armor's alpha says where it covers, and the
+    skin shows where it is clear. Some point elsewhere: a Luclin plate
+    chest is the chain chest's sprite, so there are no `ch03` files. Material 00 is the default clothing (a human's vest and
     trousers, an Iksar's harness), so None is not naked. Classic bodies swap
     the whole page.
   - **Hero's Forge set:** pick a set number. The pieces for that race are found
