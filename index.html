@@ -221,6 +221,7 @@ label.field select { width: 100%; min-width: 0; }
         <label class="field" for="bodyAnim">Animation <select id="bodyAnim"></select></label>
         <label class="field" for="bodyTex">Armor texture <select id="bodyTex"></select></label>
         <label class="field" for="bodySet">Hero's Forge set <select id="bodySet"></select></label>
+        <label class="toggle"><input type="checkbox" id="bodyHide" checked> Hide the body under armor (the tag file's Hide Mesh)</label>
         <p class="hint" id="bodySetInfo">Hero's Forge sets come from Resources/NewArmorTagData.txt; each piece is found through OnDemandResources.txt. Pieces show on Luclin bodies in game.</p>
       </details>
       <details class="sec" data-sec="client-checks" id="ccSec" hidden>
@@ -1886,14 +1887,14 @@ function buildFigure() {
 // client's own animation tracks. Held items go on the skeleton's attachment
 // points; worn pieces are skinned to its bones and follow the animation.
 const RACE = { HU: "Human", BA: "Barbarian", ER: "Erudite", EL: "Wood Elf", HI: "High Elf", DA: "Dark Elf", HA: "Half Elf", DW: "Dwarf",
-  TR: "Troll", OG: "Ogre", HO: "Halfling", GN: "Gnome", IK: "Iksar", KE: "Vah Shir" };
+  TR: "Troll", OG: "Ogre", HO: "Halfling", GN: "Gnome", IK: "Iksar", KE: "Vah Shir", FR: "Froglok", DK: "Drakkin" };
 const CLASSIC = ["HUM", "HUF", "BAM", "BAF", "ERM", "ERF", "ELM", "ELF", "HIM", "HIF", "DAM", "DAF", "HAM", "HAF", "DWM", "DWF", "TRM", "TRF", "OGM", "OGF", "HOM", "HOF", "GNM", "GNF"];
 const raceLabel = code => { const r = RACE[code.slice(0, 2)], g = code[2]; return r && (g === "M" || g === "F") ? `${r} ${g === "M" ? "male" : "female"}` : code; };
 // Animation tracks are <code><race><bone>_TRACK (classic) or
 // <code><variant><race><bone>_TRACK (Luclin, variants A/B/G). Stock Luclin
 // dark, high and half elves and erudites carry none and use another race's
 // set; classic races without a set use the elf ones in global_chr.s3d.
-const BORROW = { DAM: "ELM", DAF: "ELF", HIM: "ELM", HIF: "ELF", HAM: "HUM", HAF: "HUF", ERM: "HUM", ERF: "HUF" };
+const BORROW = { DAM: "ELM", DAF: "ELF", HIM: "ELM", HIF: "ELF", HAM: "HUM", HAF: "HUF", ERM: "HUM", ERF: "HUF", FRF: "FRM" };
 const ANIM_NAMES = { C01: "Kick", C02: "Piercing", C03: "2H slashing", C04: "2H blunt", C05: "Throwing", C06: "Off hand", C07: "Bash",
   C08: "1H slashing / blunt", C09: "Archery", C10: "Swimming attack", C11: "Round kick", D01: "Hit", D02: "Heavy hit", D05: "Death",
   L01: "Walk", L02: "Run", L03: "Running jump", L04: "Standing jump", L05: "Fall", L06: "Duck walk", L07: "Climb", L08: "Duck", L09: "Tread water",
@@ -1903,7 +1904,21 @@ const ANIM_GROUPS = { C: "Combat", D: "Damage", L: "Movement", O: "Idle", P: "Po
 // humch0201.bmp is chain (02) on the chest. 17-23 live in global<NN>_amr.s3d.
 const MAT_NAMES = { "00": "None", "01": "Leather", "02": "Chain", "03": "Plate", "04": "Monk" };
 const matLabel = mm => MAT_NAMES[mm] || (+mm >= 10 && +mm <= 16 ? `Robe ${mm}` : `Material ${mm}`);
-const body = { value: "stick", label: "", arc: "", files: null, model: null, mesh: null, points: {}, box: null, code: "",
+// Newer (EQG) character models -- Drakkin: <code>.mod carries its own
+// skeleton (ROOT_BODY, PELV, ARMR_WEAP, ...), animations are <name>_<code>.ani
+// in <code>_anims.eqg, and weapons hang on bones rather than DAG points.
+const EQG_POINTS = { R_POINT: "ARMR_WEAP", L_POINT: "ARML_WEAP", SHIELD_POINT: "ARML_SHLD", HEAD_POINT: "HEAD_HEAD" };
+const EQG_ANIM_NAMES = { stnd: "Stand", idle: "Idle", idla: "Idle", walk: "Walk", nrun: "Run", cwlk: "Duck walk", crch: "Duck", swim: "Swim", fall: "Fall",
+  jmpa: "Running jump", jmpu: "Standing jump", kick: "Kick", rkck: "Round kick", bash: "Bash", satk: "1H slashing", batk: "1H blunt", patk: "Piercing",
+  sl2h: "2H slashing", bl2h: "2H blunt", msht: "Archery", nsit: "Sit", knel: "Kneel", dnce: "Dance", wave: "Wave", clap: "Clap", pray: "Pray",
+  lute: "Lute", drum: "Drum", horn: "Horn" };
+// Bone rotations in EQG files read transposed (as the toolkit found), for the
+// body's own bones and its .ani keys alike, so worn pieces line up with it.
+const conjTrs = (pos, q, sc) => trs(pos, [-q[0], -q[1], -q[2], q[3]], sc);
+const BODY_KEY = "eqg-viewer.body.v1";   // per-browser: last body, set, texture, animation
+const bodyPrefs = () => { try { return JSON.parse(localStorage.getItem(BODY_KEY) || "{}") || {}; } catch (e) { return {}; } };
+function saveBodyPrefs() { try { localStorage.setItem(BODY_KEY, JSON.stringify({ value: body.value, set: body.set, mm: body.mm, anim: body.animKey, hide: body.hideMesh })); } catch (e) {} }
+const body = { kind: "wld", nge: false, hideMesh: bodyPrefs().hide !== false, value: "stick", label: "", arc: "", files: null, model: null, mesh: null, points: {}, box: null, code: "",
   bones: null, suffix: [], boneIdx: new Map(), rest: [], restInv: [], world: [], anims: new Map(), animKey: "", anim: null, animStart: 0, moving: false,
   baseMats: null, mm: "00", texFiles: null, worn: [], set: "", links: [], skinned: [] };
 const arcCache = new Map();
@@ -1941,6 +1956,8 @@ function bodyOptions() {
   if (client.archives.has("global_chr.s3d")) { const g = group("Classic (global_chr.s3d)"); for (const c of CLASSIC) { const v = `client:global_chr.s3d:${c}`; seen.add(v); opt(g, v, raceLabel(c)); } }
   const luclin = [...client.archives.keys()].map(k => /^global([a-z]{3})_chr\.s3d$/.exec(k)).filter(Boolean).sort((a, b) => a[1].localeCompare(b[1]));
   if (luclin.length) { const g = group("Luclin (global<race>_chr.s3d)"); for (const m of luclin) { const v = `client:${m[0]}:${m[1].toUpperCase()}`; seen.add(v); opt(g, v, raceLabel(m[1].toUpperCase())); } }
+  const more = [["globalpcfroglok_chr.s3d", ["FRM", "FRF"]], ["dkm.eqg", ["DKM"]], ["dkf.eqg", ["DKF"]]].filter(([a]) => client.archives.has(a));
+  if (more.length) { const g = group("Froglok and Drakkin"); for (const [a, codes] of more) for (const c of codes) { const v = `client:${a}:${c}`; seen.add(v); opt(g, v, raceLabel(c)); } }
   if (!seen.has(body.value)) opt(sel, body.value, body.label);   // the loaded body stays selectable
   sel.value = body.value;
 }
@@ -1965,6 +1982,33 @@ async function setBody(value) {
   const files = src === "open" ? (archive && archiveName.toLowerCase() === arc ? archive : arcCache.get(arc)) : await clientArc(arc);
   if (!files) throw new Error(`${arcName} isn't open or in the picked folder`);
   if (src === "open") arcCache.set(arc, files);
+  const prefs = bodyPrefs(), keep = { anim: body.model ? body.animKey : prefs.anim, mm: body.model ? body.mm : prefs.mm, set: body.model ? body.set : prefs.set };
+  if (arc.endsWith(".eqg")) await loadEqgBody(value, arc, arcName, code, files); else await loadWldBody(value, arc, arcName, code, files);
+  dropWorn();
+  await setBodyTexture(body.mms.includes(keep.mm) ? keep.mm : "00");
+  const pick = [keep.anim, "P01", "P01A", "P01B", "O01", "O01A", "stnd_ba_1", "idle_ba_1"].find(k => k && body.anims.has(k)) || "";
+  setBodyAnim(pick);
+  if (keep.set) { const rows = await readTags(); if (setPieces(rows, +keep.set).length) { try { $("bodySetInfo").textContent = await setBodySet(keep.set); } catch (e) {} } }
+  bodyPanel(); saveBodyPrefs();
+}
+async function loadEqgBody(value, arc, arcName, code, files) {
+  const lc = code.toLowerCase(), f = files.get(lc + ".mod");
+  if (!f) throw new Error(`no ${lc}.mod in ${arcName}`);
+  const model = readMOD(f.bytes);
+  if (!model.nBone) throw new Error(`${lc}.mod has no skeleton`);
+  const bones = model.bones, boneIdx = new Map(bones.map((b, i) => [b.name, i]));
+  for (const [pt, bn] of Object.entries(EQG_POINTS)) if (boneIdx.has(bn)) boneIdx.set(pt, boneIdx.get(bn));
+  const rest = bones.map(b => conjTrs(b.pos, b.quat, b.scale)), restWorld = worldMatrices(bones, rest);
+  const box = new THREE.Box3().setFromArray(model.pos), v = new THREE.Vector3(); box.expandByScalar(box.getSize(v).length() * 0.08);
+  const anims = new Map(), re = new RegExp(`^(.+)_${lc}\\.ani$`);
+  const af = client.archives.has(`${lc}_anims.eqg`) ? await clientArc(`${lc}_anims.eqg`) : null;
+  for (const src of [files, af].filter(Boolean)) for (const [k, x] of src) { const m = re.exec(k); if (m && !anims.has(m[1])) anims.set(m[1], { race: code, file: x }); }
+  if (body.mesh) disposeMesh(body.mesh);
+  Object.assign(body, { kind: "eqg", nge: true, luclin: false, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones,
+    suffix: [], boneIdx, rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims: new Map([...anims].sort((x, y) => x[0].localeCompare(y[0]))),
+    mms: ["00"], baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
+}
+async function loadWldBody(value, arc, arcName, code, files) {
   let w = null, a = null;
   for (const ww of wldsOf(files)) { const aa = ww.frags.find(x => x && x.type === 0x14 && x.name === code + "_ACTORDEF"); if (aa) { w = ww; a = aa; break; } }
   const model = a && wldModel(w, wldActorParts(w, a));
@@ -2017,15 +2061,9 @@ async function setBody(value) {
   for (const k of files.keys()) { const m = new RegExp(`^${lc}[a-z]{2}(\\d\\d)\\d\\d\\.(bmp|dds)$`).exec(k); if (m) mms.add(m[1]); }
   for (const k of client.archives.keys()) { const m = /^global(\d\d)_amr\.s3d$/.exec(k); if (m) mms.add(m[1]); }
   if (body.mesh) disposeMesh(body.mesh);
-  const keepAnim = body.animKey, keepMM = body.mm;
-  Object.assign(body, { value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones, suffix, boneIdx,
+  Object.assign(body, { kind: "wld", nge: false, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones, suffix, boneIdx,
     rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims, mms: [...mms].sort(), luclin,
     baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
-  dropWorn();
-  await setBodyTexture(mms.has(keepMM) ? keepMM : "00");
-  const pick = [keepAnim, "P01", "P01A", "P01B", "O01", "O01A"].find(k => k && anims.has(k)) || "";
-  setBodyAnim(pick);
-  bodyPanel();
 }
 async function setBodyTexture(mm) {
   body.mm = mm;
@@ -2037,7 +2075,7 @@ async function setBodyTexture(mm) {
 const HIDE_PARTS = { 5: ["LG"], 6: ["FT"], 7: ["LG"] };
 function applyBodyMats() {
   const mm = body.mm, lc = body.code.toLowerCase(), amr = body.amr;
-  const hidden = new Set(body.worn.filter(x => x.hide).flatMap(x => HIDE_PARTS[x.mesh.userData.slot] || []));
+  const hidden = new Set(body.hideMesh ? body.worn.filter(x => x.hide).flatMap(x => HIDE_PARTS[x.mesh.userData.slot] || []) : []);
   const has = k => body.files.has(k) || (amr && amr.has(k));
   body.texFiles = amr ? { get: k => body.files.get(k) || amr.get(k), has } : null;
   // The material name says the slot (HUMCH0001_MDF = chest, page 01); its
@@ -2057,8 +2095,13 @@ function applyBodyMats() {
 function setBodyAnim(key) {
   const A = key && body.anims.get(key);
   body.animKey = A ? key : "";
-  body.anim = A ? body.bones.map((b, i) => { const ref = A.tracks.get(body.suffix[i]); return (ref && decodeTrack(ref.w, ref.frag)) || null; }) : null;
-  body.moving = !!(body.anim && body.anim.some(t => t && t.frames.length > 1));
+  if (body.kind === "eqg") {
+    try { body.anim = A ? readANI(A.file.bytes) : null; } catch (e) { body.anim = null; }
+    body.moving = !!body.anim;
+  } else {
+    body.anim = A ? body.bones.map((b, i) => { const ref = A.tracks.get(body.suffix[i]); return (ref && decodeTrack(ref.w, ref.frag)) || null; }) : null;
+    body.moving = !!(body.anim && body.anim.some(t => t && t.frames.length > 1));
+  }
   body.animStart = performance.now();
   poseBody(body.animStart);
 }
@@ -2067,7 +2110,11 @@ const _q = new THREE.Quaternion(), _t = new THREE.Vector3(), _one = new THREE.Ve
 function poseBody(now) {
   if (!body.model) return;
   const t = now - body.animStart;
-  const local = body.bones.map((b, i) => {
+  const local = body.kind === "eqg" ? body.bones.map((b, i) => {
+    const keys = body.anim && body.anim.tracks.get(b.name);
+    if (!keys || !keys.length) return body.rest[i];
+    const k = sampleTrack(keys, t % body.anim.duration); return conjTrs(k.pos, k.quat, k.scale);
+  }) : body.bones.map((b, i) => {
     const tr = body.anim && body.anim[i];
     if (!tr) return new THREE.Matrix4().compose(body.rest[i].t, body.rest[i].q, _one);
     const n = tr.frames.length, f = (t / tr.sleep) % n, i0 = Math.floor(f), i1 = (i0 + 1) % n, k = f - i0;
@@ -2075,7 +2122,8 @@ function poseBody(now) {
     return new THREE.Matrix4().compose(_t, _q, _one);
   });
   const world = body.world = worldMatrices(body.bones, local);
-  if (body.mesh) {
+  if (body.mesh && body.kind === "eqg") skinMesh(body.mesh, body.model, world.map((m, i) => m.clone().multiply(body.restInv[i])));
+  else if (body.mesh) {
     const { vbone, vloc, nloc } = body.model.skin, P = body.mesh.geometry.attributes.position, N = body.mesh.geometry.attributes.normal;
     for (let i = 0; i < vbone.length; i++) {
       const b = vbone[i]; if (b < 0) continue;
@@ -2087,19 +2135,20 @@ function poseBody(now) {
   body.points = {}; for (const [s, i] of body.boneIdx) body.points[s] = world[i];
   for (const l of body.links) { const m = body.points[l.at]; if (m) attach(l.mesh, l.adj ? m.clone().multiply(l.adj) : m); }
   // Skinned pieces: each bone moves its vertices by (posed body bone) x (piece bind)^-1.
-  for (const s of body.skinned) {
-    const { mesh, model, map, bindInv } = s, P = mesh.geometry.attributes.position, N = mesh.geometry.attributes.normal;
-    const mats = map.map((i, b) => world[i].clone().multiply(bindInv[b])), nm = mats.map(m => new THREE.Matrix3().setFromMatrix4(m));
-    for (let v = 0; v < model.nVert; v++) {
-      const ws = model.weights[v]; if (!ws || !ws.length) continue;
-      _acc.set(0, 0, 0); _accN.set(0, 0, 0); let tw = 0;
-      for (const [b, wgt] of ws) { _v.fromArray(model.pos, v * 3).applyMatrix4(mats[b]); _acc.addScaledVector(_v, wgt);
-        _n.fromArray(model.nrm, v * 3).applyMatrix3(nm[b]); _accN.addScaledVector(_n, wgt); tw += wgt; }
-      if (tw > 0) _acc.multiplyScalar(1 / tw); _accN.normalize();
-      P.array[v * 3] = _acc.x; P.array[v * 3 + 1] = _acc.y; P.array[v * 3 + 2] = _acc.z; N.array[v * 3] = _accN.x; N.array[v * 3 + 1] = _accN.y; N.array[v * 3 + 2] = _accN.z;
-    }
-    P.needsUpdate = N.needsUpdate = true;
+  for (const s of body.skinned) skinMesh(s.mesh, s.model, s.map.map((i, b) => world[i].clone().multiply(s.bindInv[b])));
+}
+// Linear blend skinning of an EQG model (its weights) with one matrix per bone.
+function skinMesh(mesh, model, mats) {
+  const P = mesh.geometry.attributes.position, N = mesh.geometry.attributes.normal, nm = mats.map(m => new THREE.Matrix3().setFromMatrix4(m));
+  for (let v = 0; v < model.nVert; v++) {
+    const ws = model.weights[v]; if (!ws || !ws.length) continue;
+    _acc.set(0, 0, 0); _accN.set(0, 0, 0); let tw = 0;
+    for (const [b, wgt] of ws) { _v.fromArray(model.pos, v * 3).applyMatrix4(mats[b]); _acc.addScaledVector(_v, wgt);
+      _n.fromArray(model.nrm, v * 3).applyMatrix3(nm[b]); _accN.addScaledVector(_n, wgt); tw += wgt; }
+    if (tw > 0) _acc.multiplyScalar(1 / tw); _accN.normalize();
+    P.array[v * 3] = _acc.x; P.array[v * 3 + 1] = _acc.y; P.array[v * 3 + 2] = _acc.z; N.array[v * 3] = _accN.x; N.array[v * 3 + 1] = _accN.y; N.array[v * 3 + 2] = _accN.z;
   }
+  P.needsUpdate = N.needsUpdate = true;
 }
 // Hero's Forge sets from Resources/NewArmorTagData.txt: ID = set * 100 + slot,
 // Tag = race (or L = every Luclin model, * = every model), then the IT
@@ -2127,6 +2176,10 @@ async function readTags() {
 // Resources/NewArmorAdjData.txt: race, point number, scale x/y/z, offset
 // x/y/z, rotation x/y/z in degrees -- the client's per-race fit for a piece
 // hung on that point. Applied in the point's frame as offset x rotation x scale.
+// The angles are Z-Y-X with X negated (the client's handedness): measured
+// against the Luclin skeletons, that is the rotation that turns barbarian,
+// gnome and halfling male wrist points onto the human one (within ~4 degrees
+// over all 50 wrist rows; X-Y-Z left those bracers sideways).
 const POINT_NUM = { HEAD_POINT: 1, CHEST_POINT: 11, GAUNTL_POINT: 12, GAUNTR_POINT: 13, PELVIS_POINT: 14, FIHANDL: 18, FIHANDR: 19,
   LEGL_POINT: 21, LEGR_POINT: 22, SHOULDL_POINT: 26, SHOULDR_POINT: 27 };
 let adjMap = new Map(), adjFor = null;
@@ -2139,7 +2192,7 @@ async function readAdj() {
     const v = f.slice(2, 11).map(Number); if (v.some(x => !isFinite(x))) continue;
     const d = Math.PI / 180;
     adjMap.set(`${f[0].toUpperCase()}|${parseInt(f[1], 10)}`, new THREE.Matrix4().compose(new THREE.Vector3(v[3], v[4], v[5]),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(v[6] * d, v[7] * d, v[8] * d)), new THREE.Vector3(v[0], v[1], v[2])));
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(-v[6] * d, v[7] * d, v[8] * d, "ZYX")), new THREE.Vector3(v[0], v[1], v[2])));
   }
   return adjMap;
 }
@@ -2147,7 +2200,9 @@ function setPieces(rows, set) {
   const out = [];
   for (let slot = 0; slot < 8; slot++) {
     const here = rows.filter(r => r.set === set && r.slot === slot);
-    const r = here.find(x => x.tag === body.code) || (body.luclin && here.find(x => x.tag === "L")) || here.find(x => x.tag === "*");
+    // A later row for the same slot and tag overrides an earlier one.
+    const last = t => here.filter(x => x.tag === t).pop();
+    const r = last(body.code) || (body.luclin && last("L")) || (body.nge && last("N")) || last("*");
     if (r) out.push(r);
   }
   return out;
@@ -2178,17 +2233,19 @@ async function bodyPanel() {
   const an = $("bodyAnim"); an.innerHTML = "";
   const o = (p, v, t) => { const e = document.createElement("option"); e.value = v; e.textContent = t; p.append(e); };
   o(an, "", "Rest pose");
-  const groups = new Map();
-  for (const key of body.anims.keys()) { const g = ANIM_GROUPS[key[0]] || "Other"; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(key); }
+  const groups = new Map(), eqg = body.kind === "eqg";
+  for (const key of body.anims.keys()) { const g = eqg ? (/_mt_/.test(key) ? "Mounted" : "Animations") : ANIM_GROUPS[key[0]] || "Other"; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(key); }
+  const name = k => eqg ? EQG_ANIM_NAMES[k.slice(0, 4)] : ANIM_NAMES[k.slice(0, 3)];
   for (const [g, keys] of groups) { const og = document.createElement("optgroup"); og.label = g; an.append(og);
-    for (const k of keys) o(og, k, `${k}${ANIM_NAMES[k.slice(0, 3)] ? " · " + ANIM_NAMES[k.slice(0, 3)] : ""}`); }
+    for (const k of keys) o(og, k, `${k}${name(k) ? " · " + name(k) : ""}`); }
   an.value = body.animKey;
   const tx = $("bodyTex"); tx.innerHTML = ""; for (const mm of body.mms) o(tx, mm, `${mm} · ${matLabel(mm)}`); tx.value = body.mm;
   const st = $("bodySet"), rows = await readTags(); st.innerHTML = "";
   o(st, "", rows.length ? "None" : "No NewArmorTagData.txt in the client folder");
-  const sets = [...new Set(rows.filter(r => r.tag === body.code || r.tag === "*" || (body.luclin && r.tag === "L")).map(r => r.set))].sort((a, b) => a - b);
+  const sets = [...new Set(rows.filter(r => r.tag === body.code || r.tag === "*" || (body.luclin && r.tag === "L") || (body.nge && r.tag === "N")).map(r => r.set))].sort((a, b) => a - b);
   for (const s of sets) o(st, String(s), `Set ${s} (${setPieces(rows, s).length} slots)`);
   st.disabled = !sets.length || !registry; st.value = body.set;
+  $("bodyHide").checked = body.hideMesh;
 }
 // The item's own frame is the point's frame, as in game: no extra turn.
 function attach(mesh, m) { m.decompose(mesh.position, mesh.quaternion, mesh.scale); mesh.updateMatrixWorld(true); }
@@ -2741,22 +2798,28 @@ document.addEventListener("click", e => { if (!e.target.closest("#exportMenu")) 
 $("texsave").addEventListener("click", () => { if (currentTex) exportTexture(currentTex).catch(e => note(`Export failed: ${e.message}`, true)); });
 $("compare").addEventListener("click", () => cmp ? unpinCompare() : pinCompare());
 $("cmpLink").addEventListener("click", () => { if (cmp) setLinked(!cmp.linked); });
-$("figure").addEventListener("change", () => { bodyPanel(); arrange(); if (current) frame(current); userMoved = false; });
-$("body").addEventListener("change", async e => {
-  const sel = e.target, v = sel.value; sel.disabled = true;
-  try { await setBody(v); $("arcInfo").classList.remove("err"); }
+$("figure").addEventListener("change", () => {
+  // The body picked last time comes back when the figure is turned on.
+  const want = bodyPrefs().value;
+  if ($("figure").value !== "off" && !body.model && want && want !== "stick" && [...$("body").options].some(o => o.value === want)) chooseBody(want);
+  bodyPanel(); arrange(); if (current) frame(current); userMoved = false; });
+async function chooseBody(v) {
+  const sel = $("body"); sel.disabled = true;
+  try { await setBody(v); $("arcInfo").classList.remove("err"); if (v === "stick") saveBodyPrefs(); }
   catch (err) { $("arcInfo").textContent = `Body: ${err.message}`; $("arcInfo").classList.add("err"); }
   sel.disabled = false; bodyOptions(); arrange(); if (current) frame(current); userMoved = false;
-});
-$("bodyAnim").addEventListener("change", e => { setBodyAnim(e.target.value); arrange(); });
+}
+$("body").addEventListener("change", e => chooseBody(e.target.value));
+$("bodyHide").addEventListener("change", e => { body.hideMesh = e.target.checked; if (body.model) applyBodyMats(); arrange(); saveBodyPrefs(); });
+$("bodyAnim").addEventListener("change", e => { setBodyAnim(e.target.value); arrange(); saveBodyPrefs(); });
 $("bodyTex").addEventListener("change", async e => { e.target.disabled = true;
   try { await setBodyTexture(e.target.value);
     if (body.luclin && +e.target.value >= 10 && +e.target.value <= 16) $("bodySetInfo").textContent = "Robe textures only cover the chest and arms of Luclin bodies; in RoF2 the skirt is a model in the Robe slot. Pick a robe set (116–121, genericclothrobe*.eqg) under Hero's Forge set for the full robe."; }
   catch (err) { $("bodySetInfo").textContent = `Armor texture: ${err.message}`; }
-  e.target.disabled = false; arrange(); });
+  e.target.disabled = false; arrange(); saveBodyPrefs(); });
 $("bodySet").addEventListener("change", async e => { e.target.disabled = true;
   try { $("bodySetInfo").textContent = (await setBodySet(e.target.value)) || "No set."; } catch (err) { $("bodySetInfo").textContent = `Set: ${err.message}`; }
-  e.target.disabled = false; arrange(); if (current) frame(current); });
+  e.target.disabled = false; arrange(); if (current) frame(current); saveBodyPrefs(); });
 $("reset").addEventListener("click", () => { if (current) { resetOrientation(); frame(current); userMoved = false; frameCompare(); } });
 $("spin").addEventListener("click", () => { spinning = !spinning; $("spin").setAttribute("aria-pressed", String(spinning)); controls.autoRotate = spinning; if (cmp) cmp.controls.autoRotate = spinning; });
 $("axes").addEventListener("change", e => { axes.visible = e.target.checked; });
@@ -2844,7 +2907,7 @@ let lastFrame = performance.now();
 resize();
 exampleTextures();
 show(exampleModel(), "Example (built in, not an EQ asset)");
-window.__eqgv = { body, trs, worldMatrices, makeZip, get cmp() { return cmp; }, get camera() { return camera; }, readPTS, readPRT, readEDD, readTGA, loadClientFiles, fx, readPFS, readMOD, readDDS, readBMP, readANI, readWLD, wldActorParts, wldSkeleton, wldMesh, uvFlipScore, mipChain, get skin() { return skin; }, openFiles, textureFor, texErrors, preflight, loadRegistry, get current() { return current; } };
+window.__eqgv = { body, applyBodyMats, trs, worldMatrices, get adjMap() { return adjMap; }, makeZip, get cmp() { return cmp; }, get camera() { return camera; }, readPTS, readPRT, readEDD, readTGA, loadClientFiles, fx, readPFS, readMOD, readDDS, readBMP, readANI, readWLD, wldActorParts, wldSkeleton, wldMesh, uvFlipScore, mipChain, get skin() { return skin; }, openFiles, textureFor, texErrors, preflight, loadRegistry, get current() { return current; } };
 </script>
 </body>
 </html>

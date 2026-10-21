@@ -39,11 +39,16 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   shield), or wears Heroes' Forge armor pieces as a set. Choose one of:
   - a stick figure;
   - any race from your client folder: classic races from `global_chr.s3d` in
-    their standing pose, Luclin races from `global<race>_chr.s3d`;
+    their standing pose, Luclin races from `global<race>_chr.s3d`, Frogloks
+    from `globalpcfroglok_chr.s3d`, Drakkin from `dkm.eqg` / `dkf.eqg` (with
+    their `.ani` animations from `dkm_anims.eqg` / `dkf_anims.eqg`);
   - a race from an open `*_chr.s3d`.
 
   On a race body, items go on its `R_POINT`, `L_POINT`, `SHIELD_POINT` and
-  `HEAD_POINT`, as in game.
+  `HEAD_POINT` (on Drakkin, the `ARMR_WEAP`, `ARML_WEAP`, `ARML_SHLD` and
+  `HEAD_HEAD` bones), as in game. The last body, set, armor texture and
+  animation are remembered in the browser and come back when the figure is
+  turned on.
 - **Body panel** (for race bodies):
   - **Animation:** every animation the client has for the race, grouped as
     combat, movement, idle, poses, social and casting (`C08` is 1H
@@ -57,9 +62,12 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
     slot in the set, replacing the set's piece, so a custom piece can be
     checked against the rest of a set. Weapons and shields are held. The tag
     file's Hide Mesh flag is applied: the body's legs or feet under such a
-    piece are hidden, as in game. Pieces hung on a point (helms, bracers,
+    piece are hidden, as in game (a checkbox turns this off). Drakkin use the
+    tag file's `N` rows. Pieces hung on a point (helms, bracers,
     gloves) get the race's fit from `NewArmorAdjData.txt` (scale, offset and
     rotation per point) unless their tag row says Ignore Adjustment (-1).
+    The angles are read Z-Y-X with X negated, which turns barbarian, gnome
+    and halfling wrist points onto the human one.
   - **Robes:** on Luclin bodies a robe texture (10-16) covers only the chest
     and arms. In RoF2 the skirt is a model in the Robe slot, so pick a robe
     set (116-121) for the full robe.
