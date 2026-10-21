@@ -57,7 +57,9 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
     slot in the set, replacing the set's piece, so a custom piece can be
     checked against the rest of a set. Weapons and shields are held. The tag
     file's Hide Mesh flag is applied: the body's legs or feet under such a
-    piece are hidden, as in game.
+    piece are hidden, as in game. Pieces hung on a point (helms, bracers,
+    gloves) get the race's fit from `NewArmorAdjData.txt` (scale, offset and
+    rotation per point) unless their tag row says Ignore Adjustment (-1).
   - **Robes:** on Luclin bodies a robe texture (10-16) covers only the chest
     and arms. In RoF2 the skirt is a model in the Robe slot, so pick a robe
     set (116-121) for the full robe.

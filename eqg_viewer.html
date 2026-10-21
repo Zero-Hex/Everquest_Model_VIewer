@@ -1540,12 +1540,13 @@ const client = { name: "", archives: new Map(), s3dIndex: null, s3dBusy: false }
 async function loadClientEntries(entries, rootName) {
   client.name = rootName || (entries[0] ? entries[0].path.split("/")[0] : "");
   client.archives.clear(); client.s3dIndex = null;
-  let reg = null; client.tags = null;
+  let reg = null; client.tags = null; client.adj = null;
   for (const e of entries) {
     const parts = e.path.split("/");
     if (parts.length === 2 && /\.(eqg|s3d)$/i.test(e.name)) client.archives.set(e.name.toLowerCase(), e);
     if (/^resources$/i.test(parts[parts.length - 2] || "") && /^ondemandresources\.txt$/i.test(e.name)) reg = e;
     if (/^resources$/i.test(parts[parts.length - 2] || "") && /^newarmortagdata\.txt$/i.test(e.name)) client.tags = e;
+    if (/^resources$/i.test(parts[parts.length - 2] || "") && /^newarmoradjdata\.txt$/i.test(e.name)) client.adj = e;
   }
   $("ccSec").hidden = false; $("ccOut").innerHTML = ""; $("ccInfo").textContent = "";
   await loadClientFiles(entries);
@@ -1560,7 +1561,7 @@ async function walkClientHandle(dir) {
   for await (const [name, h] of dir.entries()) {
     if (h.kind === "file") { if (/\.(eqg|s3d|edd)$/i.test(name)) out.push({ path: `${root}/${name}`, name, get: () => h.getFile() }); }
     else if (/effects$/i.test(name) || /^resources$/i.test(name)) {
-      for await (const [n2, h2] of h.entries()) if (h2.kind === "file" && (/effects$/i.test(name) ? /\.(dds|tga|bmp)$/i.test(n2) : /^(ondemandresources|newarmortagdata)\.txt$/i.test(n2)))
+      for await (const [n2, h2] of h.entries()) if (h2.kind === "file" && (/effects$/i.test(name) ? /\.(dds|tga|bmp)$/i.test(n2) : /^(ondemandresources|newarmortagdata|newarmoradjdata)\.txt$/i.test(n2)))
         out.push({ path: `${root}/${name}/${n2}`, name: n2, get: () => h2.getFile() });
     }
   }
@@ -2078,7 +2079,7 @@ function poseBody(now) {
     P.needsUpdate = N.needsUpdate = true;
   }
   body.points = {}; for (const [s, i] of body.boneIdx) body.points[s] = world[i];
-  for (const l of body.links) { const m = body.points[l.at]; if (m) attach(l.mesh, m); }
+  for (const l of body.links) { const m = body.points[l.at]; if (m) attach(l.mesh, l.adj ? m.clone().multiply(l.adj) : m); }
   // Skinned pieces: each bone moves its vertices by (posed body bone) x (piece bind)^-1.
   for (const s of body.skinned) {
     const { mesh, model, map, bindInv } = s, P = mesh.geometry.attributes.position, N = mesh.geometry.attributes.normal;
@@ -2103,18 +2104,38 @@ const SLOT_POINTS = [["HEAD_POINT"], ["CHEST_POINT"], ["SHOULDR_POINT", "SHOULDL
   ["PELVIS_POINT"], ["LEGL_POINT", "LEGR_POINT"], ["CHEST_POINT"]];
 let tagRows = null, tagFor = null, tagSlot = new Map();   // IT number -> { slot, second }
 async function readTags() {
-  if (tagFor === client.tags) return tagRows;
+  if (tagFor === client.tags) { await readAdj(); return tagRows; }
   tagFor = client.tags; tagRows = []; tagSlot = new Map();
-  if (!client.tags) return tagRows;
+  if (!client.tags) { await readAdj(); return tagRows; }
   for (const l of (await (await client.tags.get()).text()).split(/\r?\n/)) {
     if (!l.trim() || l.startsWith("#")) continue; const f = l.split("\t"), id = parseInt(f[0], 10);
     if (!(id >= 0)) continue;
-    const r = { set: Math.floor(id / 100), slot: id % 100, tag: (f[1] || "").trim(), it: (f[2] || "").trim(), pair: (f[3] || "").trim(), hide: (f[6] || "").trim() === "1" };
+    const r = { set: Math.floor(id / 100), slot: id % 100, tag: (f[1] || "").trim(), it: (f[2] || "").trim(), pair: (f[3] || "").trim(), noAdj: (f[4] || "").trim() === "-1", hide: (f[6] || "").trim() === "1" };
     tagRows.push(r);
-    if (/^\d+$/.test(r.it) && !tagSlot.has(r.it)) tagSlot.set(r.it, { slot: r.slot, second: false });
-    if (/^\d+$/.test(r.pair) && !tagSlot.has(r.pair)) tagSlot.set(r.pair, { slot: r.slot, second: true });
+    if (/^\d+$/.test(r.it) && !tagSlot.has(r.it)) tagSlot.set(r.it, { slot: r.slot, second: false, noAdj: r.noAdj });
+    if (/^\d+$/.test(r.pair) && !tagSlot.has(r.pair)) tagSlot.set(r.pair, { slot: r.slot, second: true, noAdj: r.noAdj });
   }
+  await readAdj();
   return tagRows;
+}
+// Resources/NewArmorAdjData.txt: race, point number, scale x/y/z, offset
+// x/y/z, rotation x/y/z in degrees -- the client's per-race fit for a piece
+// hung on that point. Applied in the point's frame as offset x rotation x scale.
+const POINT_NUM = { HEAD_POINT: 1, CHEST_POINT: 11, GAUNTL_POINT: 12, GAUNTR_POINT: 13, PELVIS_POINT: 14, FIHANDL: 18, FIHANDR: 19,
+  LEGL_POINT: 21, LEGR_POINT: 22, SHOULDL_POINT: 26, SHOULDR_POINT: 27 };
+let adjMap = new Map(), adjFor = null;
+async function readAdj() {
+  if (adjFor === client.adj) return adjMap;
+  adjFor = client.adj; adjMap = new Map();
+  if (!client.adj) return adjMap;
+  for (const l of (await (await client.adj.get()).text()).split(/\r?\n/)) {
+    const f = l.split(",").map(x => x.trim()); if (f.length < 11 || l.startsWith("#")) continue;
+    const v = f.slice(2, 11).map(Number); if (v.some(x => !isFinite(x))) continue;
+    const d = Math.PI / 180;
+    adjMap.set(`${f[0].toUpperCase()}|${parseInt(f[1], 10)}`, new THREE.Matrix4().compose(new THREE.Vector3(v[3], v[4], v[5]),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(v[6] * d, v[7] * d, v[8] * d)), new THREE.Vector3(v[0], v[1], v[2])));
+  }
+  return adjMap;
 }
 function setPieces(rows, set) {
   const out = [];
@@ -2137,7 +2158,7 @@ async function setBodySet(set) {
     if (!f) { missing.push(`IT${it} (${line ? line.arc + " not in the folder" : "no registry line"})`); continue; }
     const model = readMOD(f.bytes); let mesh;
     texScope = { files, id: line.arc.toLowerCase() }; try { mesh = buildMesh(model); } finally { texScope = null; }
-    mesh.userData = { model, slot: r.slot, second, it };
+    mesh.userData = { model, slot: r.slot, second, it, noAdj: r.noAdj };
     root.add(mesh); body.worn.push({ mesh, model, files, arc: line.arc.toLowerCase(), hide: r.hide });
   }
   applyBodyMats();
@@ -2177,7 +2198,9 @@ function arrange() {
   const all = [current, ...extras.values()].filter(Boolean);
   for (const m of all) { place(m, [0, 0, 0]); restGeometry(m); }
   body.links = []; body.skinned = [];
-  const link = (mesh, at) => { if (body.boneIdx.has(at)) { body.links.push({ mesh, at }); return true; } return false; };
+  const link = (mesh, at, fit) => { if (!body.boneIdx.has(at)) return false;
+    const adj = fit && POINT_NUM[at] && adjMap.get(`${body.code}|${POINT_NUM[at]}`);
+    body.links.push({ mesh, at, adj }); return true; };
   const skinTo = mesh => { const model = mesh.userData.model;
     if (!model.nBone || !model.weights.some(w => w && w.length) || (skin && skin.mesh === mesh)) return false;
     const map = model.bones.map(b => body.boneIdx.has(b.name) ? body.boneIdx.get(b.name) : 0);   // ROOT_BONE and unknowns follow the root
@@ -2186,7 +2209,7 @@ function arrange() {
     // rest pose, so vertices are moved by (posed body bone) x (bind)^-1.
     const bind = worldMatrices(model.bones, model.bones.map(b => trs(b.pos, [-b.quat[0], -b.quat[1], -b.quat[2], b.quat[3]], b.scale)));
     body.skinned.push({ mesh, model, map, bindInv: bind.map(m => m.clone().invert()) }); return true; };
-  if (real) for (const x of body.worn) { const sp = SLOT_POINTS[x.mesh.userData.slot] || []; if (!skinTo(x.mesh)) link(x.mesh, sp[x.mesh.userData.second ? 1 : 0] || sp[0]); }
+  if (real) for (const x of body.worn) { const sp = SLOT_POINTS[x.mesh.userData.slot] || []; if (!skinTo(x.mesh)) link(x.mesh, sp[x.mesh.userData.second ? 1 : 0] || sp[0], !x.mesh.userData.noAdj); }
   // Armor pieces (IT number in NewArmorTagData.txt) know their slot.
   const slotOf = m => { const id = /^it(\d+)\.mod$/i.exec((m === current ? currentKey : m.userData.key) || ""); return id ? tagSlot.get(id[1]) : null; };
   if (mode === "hold" && real && all.some(slotOf)) mode = "wear";      // an armor piece is worn, not held
@@ -2213,7 +2236,7 @@ function arrange() {
       if (real && skinTo(m)) continue;                              // skinned pieces follow the body's bones
       if (model.nBone || model.wld) continue;                       // without a body they are already in body position
       const size = modelBox(model).getSize(new THREE.Vector3()), helm = sl ? sl.slot === 0 : size.z > 0.8;
-      if (real && sl) { const sp = SLOT_POINTS[sl.slot] || []; if (link(m, sp[sl.second ? 1 : 0] || sp[0])) continue; }
+      if (real && sl) { const sp = SLOT_POINTS[sl.slot] || []; if (link(m, sp[sl.second ? 1 : 0] || sp[0], !sl.noAdj)) continue; }
       if (real && !sl) { held.push(m); continue; }                 // not an armor piece: a weapon or shield
       if (!(real && link(m, helm ? "HEAD_POINT" : body.boneIdx.has("GAUNTR_POINT") ? "GAUNTR_POINT" : "R_POINT")))
         place(m, helm ? BODY.head : BODY.rWrist);                   // static: helm on the head, the rest at the wrist
@@ -2679,7 +2702,7 @@ $("eqdir").addEventListener("change", e => {
   if (!files.length) return;
   // Keep only what's used: root archives + .edd, Resources/OnDemandResources.txt, *Effects sprites.
   const keep = files.map(asEntry).filter(x => { const p = x.path.split("/"); return (p.length === 2 && /\.(eqg|s3d|edd)$/i.test(x.name)) ||
-    (p.length === 3 && /effects$/i.test(p[1]) && /\.(dds|tga|bmp)$/i.test(x.name)) || (p.length === 3 && /^resources$/i.test(p[1]) && /^(ondemandresources|newarmortagdata)\.txt$/i.test(x.name)) || p.length === 1; });
+    (p.length === 3 && /effects$/i.test(p[1]) && /\.(dds|tga|bmp)$/i.test(x.name)) || (p.length === 3 && /^resources$/i.test(p[1]) && /^(ondemandresources|newarmortagdata|newarmoradjdata)\.txt$/i.test(x.name)) || p.length === 1; });
   loadClientEntries(keep, files[0].webkitRelativePath.split("/")[0]);
 });
 $("clientBtn").addEventListener("click", pickClientFolder);
