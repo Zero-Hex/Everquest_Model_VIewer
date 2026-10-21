@@ -133,6 +133,7 @@ dd { margin: 0; font: 13px var(--mono); font-variant-numeric: tabular-nums; min-
 .hint-touch { display: none; }
 .stage.comparing::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: rgba(255,255,255,.35); pointer-events: none; }
 .badge2 { left: calc(50% + 10px); max-width: calc(50% - 20px); }
+.cmppad { position: absolute; top: 0; bottom: 0; left: 50%; right: 0; touch-action: none; z-index: 1; }
 .stage.comparing .badge { max-width: calc(50% - 20px); }
 .menu { position: relative; }
 .menu > summary { list-style: none; }
@@ -243,6 +244,7 @@ dd { margin: 0; font: 13px var(--mono); font-variant-numeric: tabular-nums; min-
         <div class="badge" id="badge">Example</div>
         <div class="hud" id="hud"></div>
         <div class="badge badge2" id="badgeB" hidden></div>
+        <div class="cmppad" id="cmpPad" hidden aria-label="Right half: drag to turn the pinned model on its own"></div>
         <button class="fullbtn" id="full" aria-pressed="false" title="Full screen (F)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg><span>Full screen</span></button>
         <div class="drop" id="drop" hidden>Drop an .eqg or .s3d (and OnDemandResources.txt) to open</div>
         <div class="texview" id="texview" hidden><img id="teximg" alt="Texture preview"><button id="texclose">Close</button><button id="texsave" style="right:86px">Save PNG</button></div>
@@ -252,7 +254,8 @@ dd { margin: 0; font: 13px var(--mono); font-variant-numeric: tabular-nums; min-
         <button id="spin" aria-pressed="false" title="Turntable rotation">Turntable</button>
         <label class="toggle" for="figure" title="Show the item on a stand-in figure. Holding: the selected item in the right hand, the first added one in the left (shields on the forearm). Wearing: armor pieces in body position.">Figure
           <select id="figure"><option value="off">Off</option><option value="hold">Holding</option><option value="wear">Wearing</option></select></label>
-        <button id="compare" aria-pressed="false" title="Pin this model to the right half, then open another on the left; both turn together (C)">Compare</button>
+        <button id="compare" aria-pressed="false" title="Pin this model to the right half, then open another on the left (C)">Compare</button>
+        <button id="cmpLink" aria-pressed="true" hidden title="Linked: both halves turn together. Unlinked: drag each half on its own (L)">Cameras linked</button>
         <details class="menu" id="exportMenu"><summary class="btn">Export</summary>
           <div class="menupop">
             <button data-export="view">View as PNG<span class="sub">exactly what's on screen</span></button>
@@ -283,7 +286,7 @@ dd { margin: 0; font: 13px var(--mono); font-variant-numeric: tabular-nums; min-
           <select id="backdrop"><option value="black" selected>Black (in-game)</option><option value="grey">Grey</option><option value="theme">Page colour</option></select></label>
         </div>
         <span class="sep"></span>
-        <span class="hint hint-mouse">Drag to rotate · right-drag or Shift-drag to pan · wheel to zoom · R to turn 90° · C to compare · F for full screen</span>
+        <span class="hint hint-mouse">Drag to rotate · right-drag or Shift-drag to pan · wheel to zoom · R to turn 90° · C to compare · L to link or separate the halves · F for full screen</span>
         <span class="hint hint-touch">Drag to rotate · pinch to zoom · two fingers to pan</span>
       </div>
     </div>
@@ -894,7 +897,7 @@ function spriteTexture(name) {
     const t = new THREE.DataTexture(new Uint8Array(d.rgba.buffer), d.w, d.h, THREE.RGBAFormat);
     t.magFilter = t.minFilter = THREE.LinearFilter; t.needsUpdate = true; holder.tex = t;
     // Emitters built before the sprite arrived switch from the placeholder dot now.
-    for (const e of fx.emitters) if (e.def.sprite === name) { e.points.material.uniforms.map.value = t; e.points.material.uniforms.hasMap.value = 1; }
+    for (const e of allEmitters()) if (e.def.sprite === name) { e.points.material.uniforms.map.value = t; e.points.material.uniforms.hasMap.value = 1; }
   }).catch(e => console.warn("sprite " + name + ": " + e.message));
   return holder;
 }
@@ -921,7 +924,7 @@ const FX_FRAG = `
     else { if (a < 0.01) discard; gl_FragColor = vec4(c.rgb * vTint.rgb, a); }
   }`;
 const FX_MAX = 400;
-function makeEmitter(def, pos, triggered, host) {
+function makeEmitter(def, pos, triggered, host, space) {
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(FX_MAX * 3), 3));
   g.setAttribute("size", new THREE.BufferAttribute(new Float32Array(FX_MAX), 1));
@@ -934,7 +937,7 @@ function makeEmitter(def, pos, triggered, host) {
     uniforms: { map: { value: holder.tex }, hasMap: { value: holder.tex ? 1 : 0 }, grid: { value: def.frames === 16 ? 4 : def.frames === 4 ? 2 : 1 }, pxScale: { value: 400 },
                 additive: { value: def.additive ? 1 : 0 } } });
   const points = new THREE.Points(g, mat); points.frustumCulled = false;
-  return { def, pos, triggered, host, points, parts: [], carry: 0 };
+  return { def, pos, triggered, host, space: space || root, points, parts: [], carry: 0 };
 }
 function buildEffects() {
   if (fx.group) { if (fx.group.parent) fx.group.parent.remove(fx.group); fx.group.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); }
@@ -980,11 +983,13 @@ function buildEffects() {
   }
 }
 const rnd = (a, b) => a + Math.random() * (b - a);
+const allEmitters = () => cmp && cmp.emitters ? fx.emitters.concat(cmp.emitters) : fx.emitters;
 function updateEffects(dt) {
-  if (!fx.emitters.length) return;
+  const list = allEmitters();
+  if (!list.length) return;
   const on = $("fxOn").checked, combat = $("fxCombat").checked;
   const pxScale = renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
-  for (const e of fx.emitters) {
+  for (const e of list) {
     const d = e.def, active = on && (!e.triggered || combat);
     e.points.visible = active;
     if (!active) { e.parts.length = 0; continue; }
@@ -992,7 +997,7 @@ function updateEffects(dt) {
     // Spawn: density as particles per second, from a ball of the emitter's
     // radius, moving along its direction with a little jitter. Positions and
     // velocities go to world (root) space at birth, so particles trail.
-    e.host.updateMatrixWorld(); const toRoot = new THREE.Matrix4().copy(root.matrixWorld).invert().multiply(e.host.matrixWorld);
+    e.host.updateMatrixWorld(); const toRoot = new THREE.Matrix4().copy(e.space.matrixWorld).invert().multiply(e.host.matrixWorld);
     const rotRoot = new THREE.Matrix3().setFromMatrix4(toRoot);
     e.carry += dt * Math.max(0.5, d.density);
     while (e.carry >= 1 && e.parts.length < FX_MAX) {
@@ -1784,9 +1789,17 @@ function pinCompare() {
   const model = current.userData.model, scene2 = new THREE.Scene(), root2 = new THREE.Group();
   const amb2 = new THREE.AmbientLight(0xffffff, amb.intensity), key2 = new THREE.DirectionalLight(0xffffff, key.intensity), rim2 = rim.clone();
   scene2.add(amb2, key2, key2.target, rim2, root2);
-  const mesh = buildMesh(model); mesh.userData.model = model; root2.add(mesh);
-  cmp = { scene: scene2, root: root2, mesh, amb: amb2, key: key2, rim: rim2, label: $("badge").textContent.replace(/ \+ \d+ more$/, ""),
+  const mesh = buildMesh(model); mesh.userData.model = model; mesh.position.copy(current.position); mesh.rotation.copy(current.rotation); root2.add(mesh);
+  // The pinned model keeps its effects: copies of the current emitters, hosted on the copy.
+  const fxGroup = new THREE.Group(); root2.add(fxGroup);
+  const emitters = fx.emitters.map(e => { const em = makeEmitter(e.def, e.pos.clone(), e.triggered, mesh, root2); fxGroup.add(em.points); return em; });
+  // Its own camera and controls, used when the cameras are unlinked.
+  const cam2 = camera.clone(), ctl2 = new THREE.OrbitControls(cam2, $("cmpPad"));
+  ctl2.enableDamping = true; ctl2.dampingFactor = 0.12; ctl2.screenSpacePanning = true; ctl2.target.copy(controls.target); ctl2.autoRotateSpeed = controls.autoRotateSpeed;
+  cmp = { scene: scene2, root: root2, mesh, amb: amb2, key: key2, rim: rim2, emitters, fxGroup, camera: cam2, controls: ctl2, linked: true,
+          label: $("badge").textContent.replace(/ \+ \d+ more$/, ""),
           stats: modelStats(model, $("badge").textContent.replace(/^.*› /, "").replace(/ \+ \d+ more$/, ""), archiveName) };
+  $("cmpLink").hidden = false; setLinked(true);
   $("badgeB").textContent = cmp.label; $("badgeB").hidden = false; stage.classList.add("comparing");
   $("compare").setAttribute("aria-pressed", "true"); $("compare").textContent = "Stop comparing";
   $("cmpSec").hidden = false; renderCompare();
@@ -1794,8 +1807,28 @@ function pinCompare() {
 function unpinCompare() {
   if (!cmp) return;
   cmp.mesh.geometry.dispose(); [].concat(cmp.mesh.material).forEach(m => m.dispose());
-  cmp = null; $("badgeB").hidden = true; stage.classList.remove("comparing");
+  cmp.fxGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+  cmp.controls.dispose();
+  cmp = null; $("badgeB").hidden = true; stage.classList.remove("comparing"); $("cmpLink").hidden = true; $("cmpPad").hidden = true;
   $("compare").setAttribute("aria-pressed", "false"); $("compare").textContent = "Compare"; $("cmpSec").hidden = true; resize();
+}
+// Linked: the right half uses the main camera. Unlinked: it starts from the
+// main camera's view and is then driven by its own controls on the right half.
+function setLinked(on) {
+  if (!cmp) return;
+  cmp.linked = on;
+  if (!on) { cmp.camera.copy(camera); cmp.controls.target.copy(controls.target); cmp.controls.autoRotate = spinning; cmp.controls.update(); }
+  $("cmpPad").hidden = on;
+  $("cmpLink").setAttribute("aria-pressed", String(on)); $("cmpLink").textContent = on ? "Cameras linked" : "Cameras separate";
+}
+function frameCompare() {
+  if (!cmp || cmp.linked) return;
+  cmp.root.position.copy(root.position); cmp.root.quaternion.copy(root.quaternion); cmp.root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(cmp.mesh), c = box.getCenter(new THREE.Vector3()), radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 0.01);
+  const half = THREE.MathUtils.degToRad(cmp.camera.fov / 2), dist = radius / Math.sin(Math.min(half, Math.atan(Math.tan(half) * cmp.camera.aspect))) * 1.05;
+  cmp.camera.near = dist / 200; cmp.camera.far = dist * 50; cmp.camera.updateProjectionMatrix();
+  cmp.camera.position.copy(c).add(new THREE.Vector3(0.55, 0.35, 0.75).normalize().multiplyScalar(dist));
+  cmp.controls.target.copy(c); cmp.controls.update();
 }
 function renderCompare() {
   if (!cmp || !current) return;
@@ -1812,13 +1845,16 @@ function renderFrame() {
   if (!cmp) { renderer.render(scene, camera); return; }
   const r = stage.getBoundingClientRect(), w = r.width, h = r.height, half = Math.floor(w / 2);
   camera.aspect = half / Math.max(1, h); camera.updateProjectionMatrix();
-  // The pinned scene follows the main one: same model-group pose, same lights.
+  // The pinned scene follows the main one: same model-group pose, same lights;
+  // its key light rides on whichever camera draws it.
+  const camB = cmp.linked ? camera : cmp.camera;
+  if (!cmp.linked) { cmp.controls.update(); camB.aspect = (w - half) / Math.max(1, h); camB.updateProjectionMatrix(); }
   cmp.root.position.copy(root.position); cmp.root.quaternion.copy(root.quaternion);
   cmp.amb.intensity = amb.intensity; cmp.key.intensity = key.intensity; cmp.rim.intensity = rim.intensity;
-  camera.updateMatrixWorld(); cmp.key.position.copy(key.getWorldPosition(new THREE.Vector3())); cmp.key.target.position.copy(controls.target);
+  camB.updateMatrixWorld(); cmp.key.position.copy(camB.localToWorld(key.position.clone())); cmp.key.target.position.copy(cmp.linked ? controls.target : cmp.controls.target);
   renderer.setScissorTest(true);
   renderer.setViewport(0, 0, half, h); renderer.setScissor(0, 0, half, h); renderer.render(scene, camera);
-  renderer.setViewport(half, 0, w - half, h); renderer.setScissor(half, 0, w - half, h); renderer.render(cmp.scene, camera);
+  renderer.setViewport(half, 0, w - half, h); renderer.setScissor(half, 0, w - half, h); renderer.render(cmp.scene, camB);
   renderer.setScissorTest(false); renderer.setViewport(0, 0, w, h);
 }
 
@@ -2202,9 +2238,10 @@ document.querySelectorAll("[data-export]").forEach(b => b.addEventListener("clic
 document.addEventListener("click", e => { if (!e.target.closest("#exportMenu")) $("exportMenu").open = false; });
 $("texsave").addEventListener("click", () => { if (currentTex) exportTexture(currentTex).catch(e => note(`Export failed: ${e.message}`, true)); });
 $("compare").addEventListener("click", () => cmp ? unpinCompare() : pinCompare());
+$("cmpLink").addEventListener("click", () => { if (cmp) setLinked(!cmp.linked); });
 $("figure").addEventListener("change", () => { arrange(); if (current) frame(current); userMoved = false; });
-$("reset").addEventListener("click", () => { if (current) { resetOrientation(); frame(current); userMoved = false; } });
-$("spin").addEventListener("click", () => { spinning = !spinning; $("spin").setAttribute("aria-pressed", String(spinning)); controls.autoRotate = spinning; });
+$("reset").addEventListener("click", () => { if (current) { resetOrientation(); frame(current); userMoved = false; frameCompare(); } });
+$("spin").addEventListener("click", () => { spinning = !spinning; $("spin").setAttribute("aria-pressed", String(spinning)); controls.autoRotate = spinning; if (cmp) cmp.controls.autoRotate = spinning; });
 $("axes").addEventListener("change", e => { axes.visible = e.target.checked; });
 const rebuild = () => { if (!current) return; const m = current.userData.model; show(m, $("badge").textContent, true); if (currentKey) listAnimations(currentKey, true); };
 $("wire").addEventListener("change", rebuild);
@@ -2252,6 +2289,7 @@ document.addEventListener("keydown", e => {
   if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); toggleFull(); }
   else if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey && !e.altKey && current) { e.preventDefault(); rollModel(); }
   else if ((e.key === "c" || e.key === "C") && !e.ctrlKey && !e.metaKey && !e.altKey && current) { e.preventDefault(); cmp ? unpinCompare() : pinCompare(); }
+  else if ((e.key === "l" || e.key === "L") && !e.ctrlKey && !e.metaKey && !e.altKey && cmp) { e.preventDefault(); setLinked(!cmp.linked); }
   else if (e.key === "Escape" && wrap.classList.contains("max")) toggleFull();
 });
 
@@ -2288,5 +2326,5 @@ let lastFrame = performance.now();
 resize();
 exampleTextures();
 show(exampleModel(), "Example (built in, not an EQ asset)");
-window.__eqgv = { makeZip, readPTS, readPRT, readEDD, readTGA, loadClientFiles, fx, readPFS, readMOD, readDDS, readBMP, readANI, readWLD, wldActorParts, wldSkeleton, wldMesh, uvFlipScore, mipChain, get skin() { return skin; }, openFiles, textureFor, texErrors, preflight, loadRegistry, get current() { return current; } };
+window.__eqgv = { makeZip, get cmp() { return cmp; }, get camera() { return camera; }, readPTS, readPRT, readEDD, readTGA, loadClientFiles, fx, readPFS, readMOD, readDDS, readBMP, readANI, readWLD, wldActorParts, wldSkeleton, wldMesh, uvFlipScore, mipChain, get skin() { return skin; }, openFiles, textureFor, texErrors, preflight, loadRegistry, get current() { return current; } };
 </script>

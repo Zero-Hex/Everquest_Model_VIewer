@@ -40,7 +40,8 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
 - **Find:** open any item by ID through `OnDemandResources.txt`, by archive
   name, or by actor name inside the `.s3d` equipment archives.
 - **Recently opened:** reopen models you looked at before.
-- **Compare:** two models side by side with linked cameras and a stats table.
+- **Compare:** two models side by side, with cameras linked or separate, effects on
+  both sides and a stats table.
 - **Export:**
   - the view as PNG;
   - transparent icon PNGs (40, 64 or 256 px);
