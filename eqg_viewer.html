@@ -101,7 +101,15 @@ dd { margin: 0; font: 13px var(--mono); font-variant-numeric: tabular-nums; min-
 .checks .bad .sev { color: var(--bad); } .checks .warn .sev { color: var(--warn); }
 .checks .info .sev { color: var(--muted); } .checks .ok .sev { color: var(--ok); }
 .checks .msg { min-width: 0; overflow-wrap: anywhere; }
-.btn.small { font-size: 13px; padding: 5px 10px; }
+.btn.small, button.small { font-size: 13px; padding: 5px 10px; }
+.ccrow { display: flex; gap: 6px; margin: 6px 0; }
+.ccrow input { flex: 1 1 auto; min-width: 0; font: 500 13px var(--body); color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+.ccgroup { border-top: 1px dashed var(--line); padding: 6px 0; }
+.ccgroup > summary { cursor: pointer; font-size: 13px; display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; }
+.ccgroup ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 1px; }
+.ccgroup li button { width: 100%; text-align: left; border: 0; background: transparent; padding: 3px 6px; border-radius: 4px; font: 12.5px var(--mono); overflow-wrap: anywhere; }
+.ccgroup li button:hover { background: var(--sel); }
+.ccgroup li span { display: block; padding: 3px 6px; font: 12.5px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
 .findwrap { position: relative; flex: 0 1 300px; min-width: 180px; }
 .findwrap input { width: 100%; box-sizing: border-box; font: 500 14px var(--body); color: var(--ink); background: var(--panel);
   border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
@@ -198,6 +206,13 @@ dd { margin: 0; font: 13px var(--mono); font-variant-numeric: tabular-nums; min-
       <details class="sec" open data-sec="recent">
         <summary class="label">Recently opened</summary>
         <ul class="list" id="recent"><li class="hint">Models you open show up here.</li></ul>
+      </details>
+      <details class="sec" data-sec="client-checks" id="ccSec" hidden>
+        <summary class="label">Client checks</summary>
+        <p class="hint">Scans the picked client folder: registry lines, archive contents and armor tags. Stock clients have thousands of leftovers, so filter to your own IDs.</p>
+        <div class="ccrow"><input id="ccFilter" type="search" placeholder="IDs: IT62, 62000-62999, or blank for all" aria-label="ID filter"><button id="ccRun" class="small">Run checks</button></div>
+        <p class="hint" id="ccInfo"></p>
+        <div id="ccOut"></div>
       </details>
       <details class="sec" open data-sec="archive">
         <summary class="label">Archive</summary>
@@ -1501,12 +1516,14 @@ const client = { name: "", archives: new Map(), s3dIndex: null, s3dBusy: false }
 async function loadClientEntries(entries, rootName) {
   client.name = rootName || (entries[0] ? entries[0].path.split("/")[0] : "");
   client.archives.clear(); client.s3dIndex = null;
-  let reg = null;
+  let reg = null; client.tags = null;
   for (const e of entries) {
     const parts = e.path.split("/");
     if (parts.length === 2 && /\.(eqg|s3d)$/i.test(e.name)) client.archives.set(e.name.toLowerCase(), e);
     if (/^resources$/i.test(parts[parts.length - 2] || "") && /^ondemandresources\.txt$/i.test(e.name)) reg = e;
+    if (/^resources$/i.test(parts[parts.length - 2] || "") && /^newarmortagdata\.txt$/i.test(e.name)) client.tags = e;
   }
+  $("ccSec").hidden = false; $("ccOut").innerHTML = ""; $("ccInfo").textContent = "";
   await loadClientFiles(entries);
   if (reg) { try { await loadRegistry(await reg.get()); } catch (e) {} }
   $("find").placeholder = `Find in ${client.name || "client"}: IT10810, 10810, archive…`;
@@ -1519,7 +1536,7 @@ async function walkClientHandle(dir) {
   for await (const [name, h] of dir.entries()) {
     if (h.kind === "file") { if (/\.(eqg|s3d|edd)$/i.test(name)) out.push({ path: `${root}/${name}`, name, get: () => h.getFile() }); }
     else if (/effects$/i.test(name) || /^resources$/i.test(name)) {
-      for await (const [n2, h2] of h.entries()) if (h2.kind === "file" && (/effects$/i.test(name) ? /\.(dds|tga|bmp)$/i.test(n2) : /^ondemandresources\.txt$/i.test(n2)))
+      for await (const [n2, h2] of h.entries()) if (h2.kind === "file" && (/effects$/i.test(name) ? /\.(dds|tga|bmp)$/i.test(n2) : /^(ondemandresources|newarmortagdata)\.txt$/i.test(n2)))
         out.push({ path: `${root}/${name}/${n2}`, name: n2, get: () => h2.getFile() });
     }
   }
@@ -1636,6 +1653,99 @@ async function openResult(r) {
   if (!e) { $("arcInfo").textContent = `${r.arc} isn't in the picked folder. Pick the EverQuest folder with Client folder…, or open ${r.arc} directly.`; $("arcInfo").classList.add("err"); return; }
   $("arcInfo").textContent = `Opening ${e.name}…`;
   await openArchiveFile(await e.get(), r.key);
+}
+
+// Client checks across the whole folder. Archive contents come from each
+// archive's PFS name table alone (header, directory, then the name entry's
+// zlib blocks), read with File.slice, so no archive is loaded whole.
+async function readPFSNames(file) {
+  const rd = async (a, b) => new Uint8Array(await file.slice(a, b).arrayBuffer());
+  const hdr = await rd(0, 12), hv = new DataView(hdr.buffer);
+  if (String.fromCharCode(hdr[4], hdr[5], hdr[6], hdr[7]) !== "PFS ") throw new Error("not a PFS archive");
+  const dirOff = hv.getUint32(0, true), n = new DataView((await rd(dirOff, dirOff + 4)).buffer).getUint32(0, true);
+  const dir = await rd(dirOff + 4, dirOff + 4 + n * 12), dv = new DataView(dir.buffer);
+  for (let i = 0; i < n; i++) {
+    if (dv.getUint32(i * 12, true) !== 0x61580AC9) continue;
+    let off = dv.getUint32(i * 12 + 4, true); const size = dv.getUint32(i * 12 + 8, true), out = new Uint8Array(size); let o = 0;
+    while (o < size) {
+      const bh = new DataView((await rd(off, off + 8)).buffer), packed = bh.getUint32(0, true);
+      const chunk = pako.inflate(await rd(off + 8, off + 8 + packed)); out.set(chunk.subarray(0, Math.min(chunk.length, size - o)), o); o += chunk.length; off += 8 + packed;
+    }
+    const nd = new DataView(out.buffer), c = nd.getUint32(0, true), names = new Set(); let p = 4;
+    for (let k = 0; k < c; k++) { const l = nd.getUint32(p, true); let s = ""; for (let j = 0; j < l && out[p + 4 + j]; j++) s += String.fromCharCode(out[p + 4 + j]); names.add(s.toLowerCase()); p += 4 + l; }
+    return names;
+  }
+  return new Set();
+}
+function idFilter(text) {
+  const t = text.trim().toUpperCase(); if (!t) return () => true;
+  const range = t.match(/^(?:IT)?(\d+)\s*-\s*(?:IT)?(\d+)$/);
+  if (range) { const a = +range[1], b = +range[2]; return id => { const m = /^IT(\d+)$/i.exec(id); return !!m && +m[1] >= a && +m[1] <= b; }; }
+  const pre = /^\d/.test(t) ? "IT" + t : t;
+  return id => id.toUpperCase().startsWith(pre);
+}
+async function runClientChecks() {
+  if (!registry) { $("ccInfo").textContent = "No OnDemandResources.txt in Resources/, so there's nothing to check against."; return; }
+  const keep = idFilter($("ccFilter").value), out = $("ccOut"); out.innerHTML = "";
+  const info = msg => { $("ccInfo").textContent = msg; };
+  const groups = [];
+  const rows = registry.rows.filter(r => r.file && r.arc);
+  const idOf = r => r.file.replace(/\.\w+$/, "").toUpperCase();
+  // 1. Registry lines naming archives that aren't in the folder.
+  const noArc = rows.filter(r => r.kind === "EQGM" && keep(idOf(r)) && !client.archives.has(r.arc.toLowerCase()));
+  groups.push({ sev: "bad", title: "registry lines name an archive that isn't in the folder (the item can't load)", items: noArc.map(r => ({ text: `${idOf(r)} → ${r.arc} (line ${r.line})` })) });
+  // 2. Archive name tables, for every archive the filtered rows use, plus all .eqg for orphans.
+  const want = new Set(rows.filter(r => keep(idOf(r))).map(r => r.arc.toLowerCase()));
+  for (const k of client.archives.keys()) if (k.endsWith(".eqg")) want.add(k);
+  const names = new Map(); let done = 0, failed = [];
+  const todo = [...want].filter(k => client.archives.has(k));
+  const worker = async () => { while (todo.length) { const k = todo.pop();
+    try { names.set(k, await readPFSNames(await client.archives.get(k).get())); } catch (e) { failed.push(k); }
+    if (++done % 25 === 0) info(`Reading archive contents… ${done} / ${want.size}`); } };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  const missing = rows.filter(r => keep(idOf(r)) && names.has(r.arc.toLowerCase()) && !names.get(r.arc.toLowerCase()).has(r.file.toLowerCase()));
+  groups.push({ sev: "bad", title: "registry lines name a file that isn't inside its archive", items: missing.map(r => ({ text: `${r.file} not in ${r.arc} (line ${r.line}, ${r.kind})` })) });
+  // 3. IT models in archives that no registry line points at.
+  const listed = new Set(rows.map(r => r.arc.toLowerCase() + "|" + r.file.toLowerCase()));
+  const orphans = [];
+  for (const [arc, set] of names) for (const f of set) if (/^it\d+\.mod$/.test(f) && keep(f.replace(/\.mod$/, "").toUpperCase()) && !listed.has(arc + "|" + f))
+    orphans.push({ text: `${f.replace(/\.mod$/, "").toUpperCase()} in ${client.archives.get(arc).name} has no registry line`, open: { arc: client.archives.get(arc).name, key: f } });
+  groups.push({ sev: "warn", title: "IT models with no registry line (they never load)", items: orphans });
+  // 4. IDs claimed by more than one archive.
+  const byId = new Map(); for (const r of rows) if (r.kind === "EQGM" && keep(idOf(r))) { const s = byId.get(idOf(r)) || new Set(); s.add(r.arc); byId.set(idOf(r), s); }
+  groups.push({ sev: "warn", title: "IDs listed for more than one archive", items: [...byId].filter(([, s]) => s.size > 1).map(([id, s]) => ({ text: `${id}: ${[...s].join(", ")}`, open: { arc: [...s].find(a => client.archives.has(a.toLowerCase())) || [...s][0], key: id.toLowerCase() + ".mod" } })) });
+  // 5. IT IDs where one is a prefix of another.
+  const its = [...byId.keys()].filter(id => /^IT\d+$/.test(id)).sort(), clash = [];
+  for (let i = 0; i < its.length; i++) for (let j = i + 1; j < its.length && its[j].startsWith(its[i]); j++) clash.push({ text: `${its[i]} is a prefix of ${its[j]}` });
+  groups.push({ sev: "warn", title: "IDs that are a prefix of another ID (can load the wrong model)", items: clash });
+  // 6. NewArmorTagData rows pointing at models without a registry line.
+  if (client.tags) {
+    const text = await (await client.tags.get()).text(), registered = new Set(rows.filter(r => r.kind === "EQGM").map(idOf)), bad = [];
+    text.split(/\r?\n/).forEach((l, i) => { if (!l.trim() || l.startsWith("#")) return; const f = l.split("\t");
+      for (const k of [2, 3]) { const v = (f[k] || "").trim(); if (!/^\d+$/.test(v) || v === "0") continue; const id = "IT" + v;
+        if (keep(id) && !registered.has(id)) bad.push({ text: `line ${i + 1}: set ${f[0]} (${(f[1] || "").trim()}) uses ${id}, which has no registry line` }); } });
+    groups.push({ sev: "warn", title: "NewArmorTagData.txt rows use a model with no registry line", items: bad });
+  } else groups.push({ sev: "info", title: "No Resources/NewArmorTagData.txt in the folder; armor tags not checked", items: [] });
+  // Render.
+  const label = { bad: "Error", warn: "Warning", info: "Note" };
+  for (const g of groups) {
+    const d = document.createElement("details"); d.className = "ccgroup " + g.sev; d.open = g.items.length > 0 && g.items.length <= 20;
+    d.innerHTML = '<summary><span class="sev"></span><span class="msg"></span></summary><ul></ul>';
+    d.querySelector(".sev").textContent = g.items.length ? label[g.sev] : "OK";
+    d.querySelector(".sev").style.color = g.items.length ? (g.sev === "bad" ? "var(--bad)" : g.sev === "warn" ? "var(--warn)" : "var(--muted)") : "var(--ok)";
+    d.querySelector(".msg").textContent = `${g.items.length.toLocaleString()} ${g.title}`;
+    const ul = d.querySelector("ul");
+    for (const it of g.items.slice(0, 200)) {
+      const li = document.createElement("li");
+      if (it.open) { const b = document.createElement("button"); b.textContent = it.text; b.addEventListener("click", () => openResult(it.open)); li.append(b); }
+      else { const sp = document.createElement("span"); sp.textContent = it.text; li.append(sp); }
+      ul.append(li);
+    }
+    if (g.items.length > 200) { const li = document.createElement("li"); li.innerHTML = '<span></span>'; li.firstChild.textContent = `…and ${g.items.length - 200} more. Narrow the ID filter to see them.`; ul.append(li); }
+    out.append(d);
+  }
+  info(`Checked ${rows.length.toLocaleString()} registry lines and ${names.size.toLocaleString()} archives` + ($("ccFilter").value.trim() ? ` for IDs matching "${$("ccFilter").value.trim()}"` : "") +
+       (failed.length ? `; ${failed.length} archives couldn't be read (${failed.slice(0, 3).join(", ")}${failed.length > 3 ? "…" : ""})` : "") + ".");
 }
 
 // Recently opened: per-browser convenience in localStorage (may be unavailable).
@@ -2217,10 +2327,12 @@ $("eqdir").addEventListener("change", e => {
   if (!files.length) return;
   // Keep only what's used: root archives + .edd, Resources/OnDemandResources.txt, *Effects sprites.
   const keep = files.map(asEntry).filter(x => { const p = x.path.split("/"); return (p.length === 2 && /\.(eqg|s3d|edd)$/i.test(x.name)) ||
-    (p.length === 3 && /effects$/i.test(p[1]) && /\.(dds|tga|bmp)$/i.test(x.name)) || (p.length === 3 && /^resources$/i.test(p[1]) && /^ondemandresources\.txt$/i.test(x.name)) || p.length === 1; });
+    (p.length === 3 && /effects$/i.test(p[1]) && /\.(dds|tga|bmp)$/i.test(x.name)) || (p.length === 3 && /^resources$/i.test(p[1]) && /^(ondemandresources|newarmortagdata)\.txt$/i.test(x.name)) || p.length === 1; });
   loadClientEntries(keep, files[0].webkitRelativePath.split("/")[0]);
 });
 $("clientBtn").addEventListener("click", pickClientFolder);
+$("ccRun").addEventListener("click", async () => { $("ccRun").disabled = true; try { await runClientChecks(); } catch (e) { $("ccInfo").textContent = "Checks failed: " + e.message; } $("ccRun").disabled = false; });
+$("ccFilter").addEventListener("keydown", e => { if (e.key === "Enter") $("ccRun").click(); });
 $("find").addEventListener("input", () => { findActive = 0; renderFind(); });
 $("find").addEventListener("focus", renderFind);
 $("find").addEventListener("keydown", e => {

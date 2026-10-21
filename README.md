@@ -53,6 +53,15 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   - missing textures and animation frames;
   - UVs that look upside down;
   - registry lines, case and ID prefix clashes in `OnDemandResources.txt`.
+- **Client checks:** scan the whole client folder, filtered to your own IDs
+  (`IT62` or `62000-62999`). It reports:
+  - registry lines whose archive is missing, or whose file isn't in the archive;
+  - IT models no registry line points at;
+  - IDs listed for more than one archive;
+  - ID prefix clashes;
+  - `NewArmorTagData.txt` rows that use unregistered models.
+
+  Click a finding to open the model.
 - **Viewing:** full screen, a phone layout, adjustable light direction and a
   Rotate 90° button for sideways `.s3d` items.
 
