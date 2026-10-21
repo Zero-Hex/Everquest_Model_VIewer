@@ -222,6 +222,8 @@ label.field select { width: 100%; min-width: 0; }
         <label class="field" for="bodyTex">Armor texture <select id="bodyTex"></select></label>
         <label class="field" for="bodySet">Hero's Forge set <select id="bodySet"></select></label>
         <label class="toggle"><input type="checkbox" id="bodyHide" checked> Hide the body under armor (the tag file's Hide Mesh)</label>
+        <div id="bodyColors" hidden><label class="toggle" for="hairColor">Hair colour <input type="color" id="hairColor"></label>
+          <label class="toggle" for="tattooColor">Tattoo colour <input type="color" id="tattooColor"></label></div>
         <p class="hint" id="bodySetInfo">Hero's Forge sets come from Resources/NewArmorTagData.txt; each piece is found through OnDemandResources.txt. Pieces show on Luclin bodies in game.</p>
       </details>
       <details class="sec" data-sec="client-checks" id="ccSec" hidden>
@@ -1287,9 +1289,14 @@ function buildMesh(model) {
   }
   // EQ stores V for Direct3D (row 0 = top) and DataTextures upload row 0 at
   // v = 0, so the file's V is used as stored -- which is what the client does
-  // (checked against in-game screenshots of custom swords and polearms).
-  const uv = model.uv;
+  // for static models (checked against in-game screenshots of custom swords
+  // and polearms). Skinned models (with bones) are drawn with V negated:
+  // stock pieces show it -- the Iksar-only Hero's Forge helm and bracers are
+  // the general static ones with every V negated -- and with V negated set 251
+  // on an Iksar matches the game, and Hero's Forge plate and Drakkin bodies
+  // and outfits read as their textures were painted.
   const skinned = model.bones && model.bones.length;
+  const uv = skinned ? drawnUV(model) : model.uv;
   g.setAttribute("position", new THREE.BufferAttribute(skinned ? new Float32Array(model.pos) : model.pos, 3));
   g.setAttribute("normal", new THREE.BufferAttribute(skinned ? new Float32Array(model.nrm) : model.nrm, 3));
   g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
@@ -1297,6 +1304,7 @@ function buildMesh(model) {
   return new THREE.Mesh(g, mats);
 }
 
+const drawnUV = model => model.drawnUV || (model.drawnUV = model.bones && model.bones.length ? model.uv.map((x, i) => i & 1 ? -x : x) : model.uv);
 function finiteBox(model) {
   const box = new THREE.Box3(), v = new THREE.Vector3(), a = model.pos;
   for (let i = 0; i < a.length; i += 3) if (Number.isFinite(a[i]) && Number.isFinite(a[i + 1]) && Number.isFinite(a[i + 2]) &&
@@ -1920,11 +1928,20 @@ const ANIM_GROUPS = { C: "Combat", D: "Damage", L: "Movement", O: "Idle", P: "Po
 // Classic / Luclin armor textures: <race><part><material><page>, e.g.
 // humch0201.bmp is chain (02) on the chest. 17-23 live in global<NN>_amr.s3d.
 const MAT_NAMES = { "00": "None", "01": "Leather", "02": "Chain", "03": "Plate", "04": "Monk" };
-const matLabel = mm => MAT_NAMES[mm] || (+mm >= 10 && +mm <= 16 ? `Robe ${mm}` : `Material ${mm}`);
+const matLabel = mm => (body.kind === "eqg" ? EQG_MAT_NAMES[mm] : MAT_NAMES[mm]) || (+mm >= 10 && +mm <= 16 ? `Robe ${mm}` : `Material ${mm}`);
 // Newer (EQG) character models -- Drakkin: <code>.mod carries its own
 // skeleton (ROOT_BODY, PELV, ARMR_WEAP, ...), animations are <name>_<code>.ani
 // in <code>_anims.eqg, and weapons hang on bones rather than DAG points.
 const EQG_POINTS = { R_POINT: "ARMR_WEAP", L_POINT: "ARML_WEAP", SHIELD_POINT: "ARML_SHLD", HEAD_POINT: "HEAD_HEAD" };
+// The game builds such a body from parts, all skinned to <code>.mod's
+// skeleton: <code>_<MM>_00_*.mod is the outfit for armor material MM (00 the
+// loincloth and sandals, 01 leather, 02 chain, 03 plate, 04 monk, 10 robe),
+// plus <code>_hair_NN, <code>_tattoo_NN (body and face markings) and optional
+// facial hair. Here: hair 00, tattoo 00, no facial hair. A part's ROOT_BONE
+// stands for the bone its file is named after (dkm_03_00_legl_thgh.mod hangs
+// on LEGL_THGH); its other bones and its bind pose are the body's own. Hair
+// and tattoos are grey in the files and tinted by the character's colours.
+const EQG_MAT_NAMES = { "00": "None", "01": "Leather", "02": "Chain", "03": "Plate", "04": "Monk", "10": "Robe" };
 const EQG_ANIM_NAMES = { stnd: "Stand", idle: "Idle", idla: "Idle", walk: "Walk", nrun: "Run", cwlk: "Duck walk", crch: "Duck", swim: "Swim", fall: "Fall",
   jmpa: "Running jump", jmpu: "Standing jump", kick: "Kick", rkck: "Round kick", bash: "Bash", satk: "1H slashing", batk: "1H blunt", patk: "Piercing",
   sl2h: "2H slashing", bl2h: "2H blunt", msht: "Archery", nsit: "Sit", knel: "Kneel", dnce: "Dance", wave: "Wave", clap: "Clap", pray: "Pray",
@@ -1934,8 +1951,8 @@ const EQG_ANIM_NAMES = { stnd: "Stand", idle: "Idle", idla: "Idle", walk: "Walk"
 const conjTrs = (pos, q, sc) => trs(pos, [-q[0], -q[1], -q[2], q[3]], sc);
 const BODY_KEY = "eqg-viewer.body.v1";   // per-browser: last body, set, texture, animation
 const bodyPrefs = () => { try { return JSON.parse(localStorage.getItem(BODY_KEY) || "{}") || {}; } catch (e) { return {}; } };
-function saveBodyPrefs() { try { localStorage.setItem(BODY_KEY, JSON.stringify({ value: body.value, set: body.set, mm: body.mm, anim: body.animKey, hide: body.hideMesh })); } catch (e) {} }
-const body = { kind: "wld", nge: false, hideMesh: bodyPrefs().hide !== false, value: "stick", label: "", arc: "", files: null, model: null, mesh: null, points: {}, box: null, code: "",
+function saveBodyPrefs() { try { localStorage.setItem(BODY_KEY, JSON.stringify({ value: body.value, set: body.set, mm: body.mm, anim: body.animKey, hide: body.hideMesh, colors: body.colors })); } catch (e) {} }
+const body = { parts: [], colors: Object.assign({ hair: "#5a3a26", tattoo: "#d0542c" }, bodyPrefs().colors || {}), kind: "wld", nge: false, hideMesh: bodyPrefs().hide !== false, value: "stick", label: "", arc: "", files: null, model: null, mesh: null, points: {}, box: null, code: "",
   bones: null, suffix: [], boneIdx: new Map(), rest: [], restInv: [], world: [], anims: new Map(), animKey: "", anim: null, animStart: 0, moving: false,
   baseMats: null, mm: "00", texFiles: null, worn: [], set: "", links: [], skinned: [] };
 const arcCache = new Map();
@@ -1981,7 +1998,7 @@ function bodyOptions() {
 function dropWorn() { for (const x of body.worn) disposeMesh(x.mesh); body.worn = []; body.set = ""; body.links = []; body.skinned = []; }   // arrange() relinks
 function dropSet() { const had = body.worn.some(x => x.hide); dropWorn(); if (had && body.model) applyBodyMats(); }
 function dropBody() {
-  if (body.mesh) disposeMesh(body.mesh); dropWorn();
+  if (body.mesh) disposeMesh(body.mesh); dropWorn(); dropParts();
   Object.assign(body, { value: "stick", label: "", model: null, mesh: null, points: {}, anims: new Map(), anim: null, moving: false, links: [], skinned: [] });
   bodyPanel();
 }
@@ -1991,6 +2008,10 @@ function buildBodyMesh(bodyOnly) {
   texScope = { files: body.texFiles || body.files, id: body.arc + "#" + body.mm };
   try { body.mesh = buildMesh(body.model); } finally { texScope = null; }
   body.mesh.userData.model = body.model; body.mesh.visible = vis; root.add(body.mesh);
+  for (const pt of body.parts || []) { if (pt.mesh) disposeMesh(pt.mesh);
+    texScope = { files: body.files, id: body.arc + "#" + body.mm }; try { pt.mesh = buildMesh(pt.model); } finally { texScope = null; }
+    pt.mesh.userData.model = pt.model; pt.mesh.visible = vis; root.add(pt.mesh);
+    if (pt.tint) [].concat(pt.mesh.material).forEach(m => m.color && m.color.set(body.colors[pt.tint])); }
   if (bodyOnly) return;
   for (const x of body.worn) { const old = x.mesh; texScope = { files: x.files, id: x.arc }; try { x.mesh = buildMesh(x.model); } finally { texScope = null; }
     x.mesh.userData = old.userData; disposeMesh(old); root.add(x.mesh); }
@@ -2022,12 +2043,31 @@ async function loadEqgBody(value, arc, arcName, code, files) {
   const anims = new Map(), re = new RegExp(`^(.+)_${lc}\\.ani$`);
   const af = client.archives.has(`${lc}_anims.eqg`) ? await clientArc(`${lc}_anims.eqg`) : null;
   for (const src of [files, af].filter(Boolean)) for (const [k, x] of src) { const m = re.exec(k); if (m && !anims.has(m[1])) anims.set(m[1], { race: code, file: x }); }
+  const mms = [...new Set([...files.keys()].map(k => new RegExp(`^${lc}_(\\d\\d)_00_.+\\.mod$`).exec(k)).filter(Boolean).map(m => m[1]))].sort();
   if (body.mesh) disposeMesh(body.mesh);
+  dropParts();
   Object.assign(body, { allTris: model.tris, kind: "eqg", nge: true, luclin: false, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones,
     suffix: [], boneIdx, rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims: new Map([...anims].sort((x, y) => x[0].localeCompare(y[0]))),
-    mms: ["00"], baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
+    mms: mms.length ? mms : ["00"], baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
 }
+// The outfit, hair and tattoo parts of an EQG body for armor material mm.
+function loadParts(mm) {
+  dropParts();
+  const lc = body.code.toLowerCase(), names = [...body.files.keys()].filter(k => k.startsWith(`${lc}_${mm}_00_`) && k.endsWith(".mod"))
+    .concat([`${lc}_hair_00.mod`, `${lc}_tattoo_00.mod`].filter(k => body.files.has(k)));
+  for (const k of names) {
+    let model; try { model = readMOD(body.files.get(k).bytes); } catch (e) { continue; }
+    if (!model.nBone) continue;
+    const on = (new RegExp(`^${lc}_\\d\\d_\\d\\d_(.+)\\.mod$`).exec(k) || [, /_(hair|facial)/.test(k) ? "head_head" : "root_body"])[1].toUpperCase();
+    const root = body.boneIdx.has(on) ? body.boneIdx.get(on) : 0;
+    const find = b => { for (let i = b, g = 0; i >= 0 && g < model.bones.length; i = model.bones[i].parent, g++) {
+      const n = model.bones[i].name; if (n === "ROOT_BONE") return root; if (body.boneIdx.has(n)) return body.boneIdx.get(n); } return root; };
+    body.parts.push({ name: k, model, map: model.bones.map((b, i) => find(i)), tint: /_(hair|facialhair|facialatt)_/.test(k) ? "hair" : /_tattoo_/.test(k) ? "tattoo" : "", mesh: null });
+  }
+}
+function dropParts() { for (const pt of body.parts || []) if (pt.mesh) disposeMesh(pt.mesh); body.parts = []; }
 async function loadWldBody(value, arc, arcName, code, files) {
+  dropParts();
   let w = null, a = null;
   for (const ww of wldsOf(files)) { const aa = ww.frags.find(x => x && x.type === 0x14 && x.name === code + "_ACTORDEF"); if (aa) { w = ww; a = aa; break; } }
   const model = a && wldModel(w, wldActorParts(w, a));
@@ -2086,6 +2126,7 @@ async function loadWldBody(value, arc, arcName, code, files) {
 }
 async function setBodyTexture(mm) {
   body.mm = mm;
+  if (body.kind === "eqg") loadParts(mm);
   body.amr = +mm >= 17 ? await clientArc(`global${mm}_amr.s3d`) : null;
   applyBodyMats();
 }
@@ -2173,7 +2214,11 @@ function poseBody(now) {
     return new THREE.Matrix4().compose(_t, _q, _one);
   });
   const world = body.world = worldMatrices(body.bones, local);
-  if (body.mesh && body.kind === "eqg") skinMesh(body.mesh, body.model, world.map((m, i) => m.clone().multiply(body.restInv[i])));
+  if (body.mesh && body.kind === "eqg") {
+    skinMesh(body.mesh, body.model, world.map((m, i) => m.clone().multiply(body.restInv[i])));
+    const delta = world.map((m, i) => m.clone().multiply(body.restInv[i]));
+    for (const pt of body.parts) if (pt.mesh) skinMesh(pt.mesh, pt.model, pt.map.map(i => delta[i]));
+  }
   else if (body.mesh) {
     const { vbone, vloc, nloc } = body.model.skin, P = body.mesh.geometry.attributes.position, N = body.mesh.geometry.attributes.normal;
     for (let i = 0; i < vbone.length; i++) {
@@ -2298,6 +2343,7 @@ async function bodyPanel() {
   for (const s of sets) o(st, String(s), `Set ${s} (${setPieces(rows, s).length} slots)`);
   st.disabled = !sets.length || !registry; st.value = body.set;
   $("bodyHide").checked = body.hideMesh;
+  $("bodyColors").hidden = !(body.parts || []).some(p => p.tint); $("hairColor").value = body.colors.hair; $("tattooColor").value = body.colors.tattoo;
 }
 // The item's own frame is the point's frame, as in game: no extra turn.
 function attach(mesh, m) { m.decompose(mesh.position, mesh.quaternion, mesh.scale); mesh.updateMatrixWorld(true); }
@@ -2309,6 +2355,7 @@ function arrange() {
   if (mode === "off" || real) { if (figureGroup) figureGroup.visible = false; }
   else { if (!figureGroup) { figureGroup = buildFigure(); root.add(figureGroup); } figureGroup.visible = true; }
   if (body.mesh) body.mesh.visible = real;
+  for (const pt of body.parts || []) if (pt.mesh) pt.mesh.visible = real;
   for (const x of body.worn) x.mesh.visible = real;
   const all = [current, ...extras.values()].filter(Boolean);
   for (const m of all) { place(m, [0, 0, 0]); restGeometry(m); }
@@ -2749,7 +2796,8 @@ function uvFlipScore(model, tris, d) {
   const contrast = flip => {
     const mask = new Uint8Array(W * H);
     for (const t of tris) {
-      const Q = [t[0], t[1], t[2]].map(v => [model.uv[v * 2], flip ? 1 - model.uv[v * 2 + 1] : model.uv[v * 2 + 1]]);
+      const uv = drawnUV(model);   // as the client draws it (V negated on skinned models)
+      const Q = [t[0], t[1], t[2]].map(v => [uv[v * 2], flip ? 1 - uv[v * 2 + 1] : uv[v * 2 + 1]]);
       // Shift the triangle into [0,1) as the sampler's repeat wrap would.
       const ou = Math.floor(Math.min(Q[0][0], Q[1][0], Q[2][0])), ov = Math.floor(Math.min(Q[0][1], Q[1][1], Q[2][1]));
       const P = Q.map(([u, v]) => [(u - ou) * W, (v - ov) * H]);
@@ -2866,6 +2914,10 @@ async function chooseBody(v) {
   sel.disabled = false; bodyOptions(); arrange(); if (current) frame(current); userMoved = false;
 }
 $("body").addEventListener("change", e => chooseBody(e.target.value));
+for (const [id, key] of [["hairColor", "hair"], ["tattooColor", "tattoo"]]) $(id).addEventListener("input", e => {
+  body.colors[key] = e.target.value;
+  for (const pt of body.parts) if (pt.tint === key && pt.mesh) [].concat(pt.mesh.material).forEach(m => m.color && m.color.set(e.target.value));
+  saveBodyPrefs(); });
 $("bodyHide").addEventListener("change", e => { body.hideMesh = e.target.checked; if (body.model) applyBodyMats(); arrange(); saveBodyPrefs(); });
 $("bodyAnim").addEventListener("change", e => { setBodyAnim(e.target.value); arrange(); saveBodyPrefs(); });
 $("bodyTex").addEventListener("change", async e => { e.target.disabled = true;

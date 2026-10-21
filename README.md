@@ -26,7 +26,10 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   from `.s3d` archives, and DDS, BMP and TGA textures.
 - **Drawn like the client:**
   - one-sided faces;
-  - V read as stored;
+  - V read as stored on static models and negated on skinned ones (models
+    with bones: Hero's Forge pieces, Drakkin, animated items), as the client
+    does; stock data shows it (the Iksar-only plate helm is the general static
+    one with every V negated);
   - shading follows the client's own compiled shaders
     (`RenderEffects/SPL/SModel*.fxo`, `SkinMesh*.fxo`), read from the
     shader bytecode. The letters after `CB` in the shader name select the
@@ -52,8 +55,10 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   - a stick figure;
   - any race from your client folder: classic races from `global_chr.s3d` in
     their standing pose, Luclin races from `global<race>_chr.s3d`, Frogloks
-    from `globalpcfroglok_chr.s3d`, Drakkin from `dkm.eqg` / `dkf.eqg` (with
-    their `.ani` animations from `dkm_anims.eqg` / `dkf_anims.eqg`);
+    from `globalpcfroglok_chr.s3d`, Drakkin from `dkm.eqg` / `dkf.eqg`, built
+    as the game builds them: the base model plus the outfit parts for the armor
+    material (`dkm_<MM>_00_*`), hair and tattoos, with hair and tattoo colour
+    pickers, and `.ani` animations from `dkm_anims.eqg` / `dkf_anims.eqg`;
   - a race from an open `*_chr.s3d`.
 
   On a race body, items go on its `R_POINT`, `L_POINT`, `SHIELD_POINT` and
