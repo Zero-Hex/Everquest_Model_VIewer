@@ -700,6 +700,35 @@ function wldMesh(w, f) {
   if (list) { const n = wU32(w, list.o + 8); for (let k = 0; k < n; k++) { const mf = wRef(w, list.o + 12 + k * 4, 0x30); mats.push(mf); } }
   return { name: f.name, nv, pos, uv, nrm, polys, pieces, runs, mats };
 }
+// The older mesh 0x2C (gequip's IT62 sword, IT1036), as quail reads it:
+// counts, palette 0x31 at +36, centre at +44, then float vertices, UVs and
+// normals, colours, 16-byte faces {flags, 4 x u16, v1, v2, v3}, mesh ops,
+// vertex pieces {count, bone}; with 0x200 a u32 list; with 0x800 face
+// material runs {count, material}.
+function wldMesh2C(w, f) {
+  const o = f.o, dv = w.dv, u32 = k => dv.getUint32(o + k, true), fl = dv.getUint32(o + 4, true);
+  const nv = u32(8), nt = u32(12), nn = u32(16), nc = u32(20), np = u32(24), nOps = dv.getUint16(o + 28, true), nPieces = u32(32);
+  const cx = dv.getFloat32(o + 44, true), cy = dv.getFloat32(o + 48, true), cz = dv.getFloat32(o + 52, true);
+  let p = o + 68;
+  const pos = new Float32Array(nv * 3), uv = new Float32Array(nv * 2), nrm = new Float32Array(nv * 3);
+  for (let i = 0; i < nv; i++, p += 12) { pos[i * 3] = cx + dv.getFloat32(p, true); pos[i * 3 + 1] = cy + dv.getFloat32(p + 4, true); pos[i * 3 + 2] = cz + dv.getFloat32(p + 8, true); }
+  for (let i = 0; i < nt; i++, p += 8) if (i < nv) { uv[i * 2] = dv.getFloat32(p, true); uv[i * 2 + 1] = dv.getFloat32(p + 4, true); }
+  for (let i = 0; i < nn; i++, p += 12) if (i < nv) for (let k = 0; k < 3; k++) nrm[i * 3 + k] = dv.getFloat32(p + k * 4, true);
+  p += nc * 4;
+  const polys = []; for (let i = 0; i < np; i++, p += 16) polys.push([dv.getUint16(p + 10, true), dv.getUint16(p + 12, true), dv.getUint16(p + 14, true)]);
+  for (let i = 0; i < nOps; i++) { const t = dv.getUint32(p, true); p += 4 + (t >= 1 && t <= 4 ? 4 : 0) + 4; }
+  const pieces = []; for (let i = 0; i < nPieces; i++, p += 4) pieces.push([dv.getUint16(p, true), dv.getUint16(p + 2, true)]);
+  if (fl & 0x200) { const n = dv.getUint32(p, true); p += 4 + n * 4; }
+  const runs = [];
+  if (fl & 0x800) { const n = dv.getUint32(p, true); p += 4; for (let i = 0; i < n; i++, p += 4) runs.push([dv.getUint16(p, true), dv.getUint16(p + 2, true)]); }
+  else runs.push([np, 0]);
+  const list = wRef(w, o + 36, 0x31), mats = [];
+  if (list) { const n = wU32(w, list.o + 8); for (let k = 0; k < n; k++) mats.push(wRef(w, list.o + 12 + k * 4, 0x30)); }
+  return { name: f.name, nv, pos, uv, nrm, polys, pieces, runs, mats };
+}
+// A 0x2D mesh reference may point at either mesh type.
+const meshRef = (w, o) => wRef(w, o, 0x36) || wRef(w, o, 0x2C);
+const meshTris = (w, m) => m.type === 0x2C ? w.dv.getUint32(m.o + 24, true) : wU16(w, m.o + 84);
 
 // Skeleton 0x10: bones {name, flags, track -> 0x13, mesh -> 0x2D, children};
 // with flag 0x200 a list of skinned meshes follows. Rest pose = each bone's
@@ -712,8 +741,9 @@ function wldSkeleton(w, f, pose) {
   const bones = [];
   for (let b = 0; b < nb; b++) {
     const nameRef = w.dv.getInt32(q, true), track = wRef(w, q + 8, 0x13), mesh = wRef(w, q + 12, 0x2D), nChild = wU32(w, q + 16);
+    const cloud = wRef(w, q + 12, 0x34);                              // a particle cloud hung on this bone (old items' effects)
     const children = []; for (let c = 0; c < nChild; c++) children.push(wU32(w, q + 20 + c * 4));
-    bones.push({ name: nameRef < 0 ? w.hstr(-nameRef) : "", track, mesh, children, parent: -1 }); q += 20 + nChild * 4;
+    bones.push({ name: nameRef < 0 ? w.hstr(-nameRef) : "", track, mesh, cloud, children, parent: -1 }); q += 20 + nChild * 4;
   }
   bones.forEach((b, i) => b.children.forEach(c => { if (bones[c]) bones[c].parent = i; }));
   const meshes = bones.filter(b => b.mesh).map(b => b.mesh);
@@ -752,13 +782,13 @@ function wldActorParts(w, f, pose) {
   }
   const parts = [];
   for (const r of refs) {
-    if (r.type === 0x2D) { const m = wRef(w, r.o + 4, 0x36); if (m) parts.push({ mesh: m }); }
+    if (r.type === 0x2D) { const m = meshRef(w, r.o + 4); if (m) parts.push({ mesh: m }); }
     else if (r.type === 0x11) {
       const sk = wRef(w, r.o + 4, 0x10); if (!sk) continue;
       const skel = wldSkeleton(w, sk, pose);
       skel.bones.forEach((b, i) => { if (b.mesh) b.attachBone = i; });
       for (const m2d of skel.meshes) {
-        const m = wRef(w, m2d.o + 4, 0x36); if (!m) continue;
+        const m = meshRef(w, m2d.o + 4); if (!m) continue;
         const bi = skel.bones.findIndex(b => b.mesh === m2d);
         parts.push({ mesh: m, skel, bone: bi });
       }
@@ -774,7 +804,7 @@ function wldModel(w, parts) {
   let skinned = false;
   const v = new THREE.Vector3(), n = new THREE.Vector3(), m3 = new THREE.Matrix3();
   for (const part of parts) {
-    const m = wldMesh(w, part.mesh), base = pos.length / 3;
+    const m = part.mesh.type === 0x2C ? wldMesh2C(w, part.mesh) : wldMesh(w, part.mesh), base = pos.length / 3;
     // Bone per vertex: vertex pieces, or the bone the mesh hangs from.
     const boneOf = new Int32Array(m.nv).fill(part.skel ? Math.max(0, part.bone) : -1);
     if (part.skel && m.pieces.length) { let i = 0; for (const [cnt, b] of m.pieces) for (let k = 0; k < cnt && i < m.nv; k++) boneOf[i++] = b; }
@@ -806,7 +836,9 @@ function wldModel(w, parts) {
     }
   }
   const nVert = pos.length / 3;
-  return { wld: true, wldVer: w.ver, parts: parts.length, skinnedRest: skinned, skel: (parts.find(p => p.skel) || {}).skel || null,
+  const sk = (parts.find(p => p.skel) || {}).skel || null;
+  const clouds = sk ? sk.bones.map((b, i) => b.cloud ? { w, f: b.cloud, bone: i, at: new THREE.Vector3().setFromMatrixPosition(sk.world[i]) } : null).filter(Boolean) : [];
+  return { wld: true, wldVer: w.ver, parts: parts.length, skinnedRest: skinned, skel: sk, clouds,
     skin: skinned && parts.every(p => !p.skel || p.skel === parts.find(q => q.skel).skel) ? { vbone: new Int32Array(vbone), vloc: new Float32Array(vloc), nloc: new Float32Array(nloc) } : null, ver: 0, vsize: 0, nBone: 0, bones: [], weights: [],
     mats, pos: new Float32Array(pos), nrm: new Float32Array(nrm), uv: new Float32Array(uv), tris, nVert, nTri: tris.length, sizeOk: true };
 }
@@ -819,13 +851,13 @@ function wldEntries(files) {
     let w; try { w = readWLD(f.bytes); } catch (e) { continue; }
     const actors = w.frags.filter(x => x && x.type === 0x14);
     for (const a of actors) {
-      const tris = (() => { try { return wldActorParts(w, a).reduce((s, p) => s + wU16(w, p.mesh.o + 84), 0); } catch (e) { return 0; } })();
+      const tris = (() => { try { return wldActorParts(w, a).reduce((s, p) => s + meshTris(w, p.mesh), 0); } catch (e) { return 0; } })();
       out.push({ key: `wld:${k}:${w.frags.indexOf(a)}`, label: a.name.replace(/_ACTORDEF$/, ""), tris, build: () => wldModel(w, wldActorParts(w, a)) });
     }
     if (!actors.length) {
       const meshes = w.frags.filter(x => x && x.type === 0x36);
       if (meshes.length) out.push({ key: `wld:${k}:all`, label: `${k.replace(/\.wld$/, "")} (all ${meshes.length} meshes)`,
-        tris: meshes.reduce((s, m) => s + wU16(w, m.o + 84), 0), build: () => wldModel(w, meshes.map(m => ({ mesh: m }))) });
+        tris: meshes.reduce((s, m) => s + meshTris(w, m), 0), build: () => wldModel(w, meshes.map(m => ({ mesh: m }))) });
     }
   }
   return out;
@@ -987,6 +1019,30 @@ const FX_FRAG = `
     else { if (a < 0.01) discard; gl_FragColor = vec4(c.rgb * vTint.rgb, a); }
   }`;
 const FX_MAX = 400;
+// Old (.s3d) items carry their effects in the WLD: a particle cloud (0x34)
+// hung on a bone of the item's skeleton, drawing a sprite (0x26 -> 0x05 ->
+// 0x04 -> bitmaps). Fields, read from gequip.wld: movement (3 = along the
+// spawn normal, 4 = every way), particle count, spawn radius, cone angle,
+// lifetime in ms, speed, spawn normal (z, x, y), rate per second, size,
+// colour as ARGB. Turned into the same settings the .eqg emitters use.
+function readCloud(w, f) {
+  const o = f.o, i = k => w.dv.getInt32(o + k, true), fl = k => w.dv.getFloat32(o + k, true);
+  const nrm = new THREE.Vector3(fl(64), fl(68), fl(60)), speed = fl(56), life = i(52), col = w.dv.getUint32(o + 80, true);
+  let sprite = "", frames = 1, additive = true;
+  const s26 = wRef(w, o + 84, 0x26), s5 = s26 && wRef(w, s26.o + 8, 0x05), s4 = s5 && wRef(w, s5.o + 4, 0x04);
+  if (s26) additive = (w.dv.getUint32(s26.o + 12, true) & 0xFF) !== 0x13;
+  if (s4) { const n = wU32(w, s4.o + 8), fl4 = wU32(w, s4.o + 4); let q = s4.o + 12; if (fl4 & 4) q += 4; if (fl4 & 8) q += 4;
+    const f3 = wRef(w, q, 0x03); if (f3) { const len = wU16(w, f3.o + 8); let t = ""; for (let k = 0; k < len; k++) { const c = w.bytes[f3.o + 10 + k] ^ WLD_KEY[k % 8]; if (!c) break; t += String.fromCharCode(c); } sprite = t.toLowerCase(); }
+    frames = 1; }
+  const omni = i(12) !== 3 || nrm.lengthSq() < 1e-6, rgb = [(col >>> 16) & 255, (col >>> 8) & 255, col & 255];
+  // A particle that never dies (lifetime of days: torch and blade flames)
+  // stays where it was born.
+  const still = life > 60000;
+  return { name: f.name.replace(/_PCD$/, ""), sprite, additive, frames, wld: true, omni: omni || still, speed: still ? 0 : speed,
+    max: Math.max(1, i(20)), density: Math.max(0.5, i(72)), fadeout: life > 60000 ? 3600 : Math.max(0.05, life / 1000),
+    vel: omni || still ? [0, 0, 0] : nrm.clone().normalize().multiplyScalar(speed).toArray(), spread: [speed * Math.tan(THREE.MathUtils.degToRad(fl(48))), 0, 0],
+    radius: fl(44), totalScale: 1, particleScale: [fl(76), fl(76)], imageStretch: fl(76), c0: rgb, c1: rgb, burst: [0, 0], translation: [0, 0, 0], movement: i(12) };
+}
 function makeEmitter(def, pos, triggered, host, space) {
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(FX_MAX * 3), 3));
@@ -1009,6 +1065,16 @@ function buildEffects() {
   fx.group = new THREE.Group(); fx.emitters = []; root.add(fx.group);
   const ul = $("fxList"); ul.innerHTML = "";
   const model = current && current.userData.model;
+  if (model && model.wld && model.clouds && model.clouds.length) {
+    for (const c of model.clouds) {
+      const def = readCloud(c.w, c.f), li = document.createElement("li"), bone = model.skel.bones[c.bone].name.replace(/_DAG$/, "");
+      li.className = "ok"; li.innerHTML = '<span class="sev">On</span><span class="msg"></span>';
+      li.lastChild.textContent = `${def.name} (WLD particle cloud) at ${bone} · ${def.sprite || "no sprite"}${def.additive ? " · additive" : ""} · ${def.max} particles, ${+def.fadeout.toFixed(2)} s, ${+def.speed.toFixed(2)}/s, rate ${def.density}/s, size ${+def.particleScale[0].toFixed(2)}`;
+      ul.append(li);
+      const em = makeEmitter(def, c.at.clone(), false, current); fx.emitters.push(em); fx.group.add(em.points);
+    }
+    return;
+  }
   if (!model || model.wld || model.example || !archive || !currentKey) return;
   const id = currentKey.replace(/\.mod$/i, "");
   const prtF = archive.get(id + ".prt"), ptsF = archive.get(id + ".pts");
@@ -1063,13 +1129,13 @@ function updateEffects(dt) {
     e.host.updateMatrixWorld(); const toRoot = new THREE.Matrix4().copy(e.space.matrixWorld).invert().multiply(e.host.matrixWorld);
     const rotRoot = new THREE.Matrix3().setFromMatrix4(toRoot);
     e.carry += dt * Math.max(0.5, d.density);
-    while (e.carry >= 1 && e.parts.length < FX_MAX) {
+    while (e.carry >= 1 && e.parts.length < Math.min(FX_MAX, d.max || FX_MAX)) {
       e.carry -= 1;
       const dir = new THREE.Vector3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize();
       const life = Math.max(0.05, (d.fadeout || 1) * rnd(0.75, 1.25));
       const jitter = 0.15 * (Math.hypot(...d.vel) || 1) + Math.hypot(...d.spread) * 0.1;
       e.parts.push({ p: e.pos.clone().addScaledVector(dir, Math.random() * Math.max(0, d.radius)).applyMatrix4(toRoot),
-        v: new THREE.Vector3(...d.vel).addScaledVector(dir, jitter * Math.random()).applyMatrix3(rotRoot), age: 0, life, f0: Math.floor(Math.random() * Math.max(1, d.frames)) });
+        v: (d.omni ? dir.clone().multiplyScalar(d.speed * rnd(0.5, 1)) : new THREE.Vector3(...d.vel).addScaledVector(dir, jitter * Math.random())).applyMatrix3(rotRoot), age: 0, life, f0: Math.floor(Math.random() * Math.max(1, d.frames)) });
     }
     if (e.carry > 1) e.carry = 1;
     const P = e.points.geometry.attributes.position.array, S = e.points.geometry.attributes.size.array, T = e.points.geometry.attributes.tint.array, F = e.points.geometry.attributes.frame.array;
@@ -1081,7 +1147,9 @@ function updateEffects(dt) {
       const sz = (d.totalScale > 0 ? d.totalScale : 1) * ps;
       P[n * 3] = q.p.x; P[n * 3 + 1] = q.p.y; P[n * 3 + 2] = q.p.z;
       S[n] = Math.max(0.01, sz);
-      const a = Math.min(1, t * 6, (1 - t) * 3);
+      // Fade in over a sixth of the life (at most 0.3 s, so a flame that
+      // lives for hours still shows at once) and out over the last third.
+      const a = Math.min(1, q.age / Math.min(q.life / 6, 0.3), (1 - t) * 3);
       for (let c = 0; c < 3; c++) T[n * 4 + c] = Math.max(0, d.c0[c] + (d.c1[c] - d.c0[c]) * t) / 255;
       T[n * 4 + 3] = a;
       F[n] = Math.max(1, d.frames) > 1 ? (q.f0 + Math.floor(q.age * 16)) % d.frames : 0; // frame rate unknown; 16 fps
@@ -1690,7 +1758,7 @@ async function offerReconnect() {
 // archive's models, and (on request) actor names inside the client's .s3d
 // equipment archives, which have no registry lines.
 function findResults(q) {
-  const out = [], seen = new Set(), push = r => { const k = r.arc + "|" + r.key; if (!seen.has(k)) { seen.add(k); out.push(r); } };
+  const out = [], seen = new Set(), push = r => { const k = r.arc.toLowerCase() + "|" + (r.key ? r.label.toUpperCase() : "#" + r.label); if (!seen.has(k)) { seen.add(k); out.push(r); } };
   let Q = q.trim().toUpperCase().replace(/\.MOD$/, ""); if (!Q) return out;
   if (/^\d+$/.test(Q)) Q = "IT" + Q;
   const rank = s => (s === Q ? 0 : s.startsWith(Q) ? 1 : 2) * 1e6 + s.length;
@@ -1712,7 +1780,10 @@ function findResults(q) {
     else if (archive && archive.has(k.toLowerCase() + ".mod")) push({ label: k, sub: archiveName + " (open)", arc: archiveName, key: k.toLowerCase() + ".mod" });
   }
   for (const [k, e] of client.archives) if (k.includes(ql)) push({ label: e.name, sub: "archive", arc: e.name, key: null });
-  return out.slice(0, 60);
+  // An exact ID (IT62) first, wherever it was found: otherwise IT62000-IT62999
+  // in the registry crowd out the old .s3d actor IT62.
+  const exact = r => r.key && r.label.toUpperCase() === Q ? 0 : 1;
+  return out.map((r, i) => [r, i]).sort((a, b) => exact(a[0]) - exact(b[0]) || a[1] - b[1]).map(x => x[0]).slice(0, 60);
 }
 let findActive = 0;
 function renderFind() {
@@ -1728,12 +1799,10 @@ function renderFind() {
   });
   const looksLikeId = /^(it)?\d+$/i.test(q.trim());
   if (!res.length) { const li = document.createElement("li"); li.className = "hint"; li.textContent = client.archives.size || archive ? "Nothing found." : "Pick your client folder to search all items, or open an archive."; ul.append(li); }
-  if (looksLikeId && client.archives.size && !client.s3dIndex) {
-    const li = document.createElement("li"), b = document.createElement("button");
-    b.innerHTML = '<span class="name">Also search the old .s3d equipment archives</span><span class="sub">reads every *equip*.s3d once (a few seconds)</span>';
-    b.addEventListener("click", async () => { await buildS3dIndex(); findActive = 0; renderFind(); });
-    li.append(b); ul.append(li);
-  }
+  // An ID search also looks in the old .s3d equipment archives (actors such
+  // as IT62 have no registry line); they are read once, the first time.
+  if (looksLikeId && client.archives.size && !client.s3dIndex && !client.s3dBusy)
+    setTimeout(async () => { await buildS3dIndex(); findActive = 0; if (!$("findRes").hidden) renderFind(); }, 0);
   if (client.s3dBusy) { const li = document.createElement("li"); li.className = "hint"; li.textContent = "Scanning .s3d archives…"; ul.append(li); }
   ul.hidden = false;
 }

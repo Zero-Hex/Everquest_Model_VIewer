@@ -49,7 +49,11 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   - stored mip levels, with a Mip control to see what shows at a distance.
 - **Item animations:** an item's own `.ani` files play on its skeleton.
 - **Effects:** with your client folder picked, an item's `.prt`/`.pts`
-  emitters play from `actoremittersnew.edd` and the `*Effects` sprites.
+  emitters play from `actoremittersnew.edd` and the `*Effects` sprites. Old
+  `.s3d` items carry theirs in the WLD instead: particle clouds hung on
+  points of the item's skeleton (`IT62`'s flaming sword, `IT151`'s mage
+  sparkles, `IT160`'s flame blade, torches), drawn with the archive's own
+  sprites.
 - **Figure:** a body that holds the selected item (and a second one or a
   shield), or wears Heroes' Forge armor pieces as a set. Choose one of:
   - a stick figure;
@@ -112,7 +116,9 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
     and arms. In RoF2 the skirt is a model in the Robe slot, so pick a robe
     set (116-121) for the full robe.
 - **Find:** open any item by ID through `OnDemandResources.txt`, by archive
-  name, or by actor name inside the `.s3d` equipment archives.
+  name, or by actor name inside the `.s3d` equipment archives, which an ID
+  search reads the first time. An exact ID comes first, so `IT62` finds
+  `gequip.s3d`'s sword ahead of `IT62000`-`IT62999`.
 - **Recently opened:** reopen models you looked at before.
 - **Friendly names:** give a model a name of your own in Selected model
   (`IT62600` → "Molten Blade"). Names show in the model list, Recently
@@ -207,7 +213,8 @@ published meaning.
 - **PTCL `.prt`** (v4 and v5) lists emitter entries.
 - **EDD** is `name[64]`, `texture[32]` and 80 fields per emitter.
 - **WLD** (`.s3d`) uses fragments 0x03/04/05/30/31 (materials), 0x36
-  (meshes), 0x2D, 0x10/0x11/0x12/0x13 (skeletons and tracks) and 0x14
+  and the older 0x2C (meshes), 0x2D, 0x34/0x26 (particle clouds and their
+  sprites), 0x10/0x11/0x12/0x13 (skeletons and tracks) and 0x14
   (actors). A track frame is eight 16-bit values: rotation w, x, y, z over
   16384, shift x, y, z over 256, and the bone's scale over 256, which also
   scales the bones below it. The last value is often read as a shift
