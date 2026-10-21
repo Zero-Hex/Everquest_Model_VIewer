@@ -322,6 +322,7 @@ details.sec.userhide { display: none !important; }
         <label class="toggle" for="bright">Brightness <input type="range" id="bright" min="0.3" max="2" step="0.05" value="1"></label>
         <label class="toggle" for="lightAz" title="Where the main light comes from, left to right, relative to your view">Light <input type="range" id="lightAz" min="-180" max="180" step="5" value="15"></label>
         <label class="toggle" for="lightEl" title="How high the main light is, relative to your view">Height <input type="range" id="lightEl" min="-80" max="80" step="5" value="20"></label>
+        <label class="toggle" for="ambient" title="The even, directionless light; 0 turns it off so only the main lights shade the model">Ambient <input type="range" id="ambient" min="0" max="2" step="0.05" value="1"></label>
         <button id="lightReset" title="Put the light back where the in-game preview has it">Reset light</button>
         <label class="toggle" for="backdrop">Backdrop
           <select id="backdrop"><option value="black" selected>Black (in-game)</option><option value="grey">Grey</option><option value="theme">Page colour</option></select></label>
@@ -1118,7 +1119,7 @@ function applyLightDir() {
   const az = THREE.MathUtils.degToRad(+$("lightAz").value), el = THREE.MathUtils.degToRad(+$("lightEl").value);
   key.position.set(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el));
 }
-function applyBrightness() { const b = +$("bright").value; amb.intensity = LIGHT.amb * b; key.intensity = LIGHT.key * b; rim.intensity = LIGHT.rim * b; }
+function applyBrightness() { const b = +$("bright").value; amb.intensity = LIGHT.amb * b * +$("ambient").value; key.intensity = LIGHT.key * b; rim.intensity = LIGHT.rim * b; }
 const axes = new THREE.AxesHelper(1); axes.visible = false; scene.add(axes);
 // EQG models are Z-up; three.js is Y-up. Rotate the whole model group.
 const root = new THREE.Group(); root.rotation.x = -Math.PI / 2; scene.add(root);
@@ -3144,6 +3145,9 @@ const ZONES = [["load", "Character select (load)"], ["load2", "Character select 
 function zoneOptions() {
   const sel = $("backdrop"); [...sel.options].filter(o => o.value.startsWith("zone:")).forEach(o => o.remove());
   for (const [z, label] of ZONES) if (client.archives.has(z + ".s3d")) { const o = document.createElement("option"); o.value = "zone:" + z; o.textContent = label; sel.append(o); }
+  // A zone backdrop picked last time comes back once its archive is here.
+  const want = viewPrefs().backdrop;
+  if (want && want.startsWith("zone:") && [...sel.options].some(o => o.value === want) && sel.value !== want) { sel.value = want; applyStageColor(); }
 }
 const wldIn = (files, name) => { const f = files && files.get(name); return f ? (f.w || (f.w = readWLD(f.bytes))) : null; };
 function dropZone() {
@@ -3196,11 +3200,12 @@ async function setZone(name) {
       return new THREE.Vector3(c.x, c.y, hit ? hit.point.z : c.z - 20);
     });
     if ($("backdrop").value !== "zone:" + name) { disposeMesh(ground); templates.forEach(disposeMesh); note(""); return; }   // changed meanwhile
-    Object.assign(zoneState, { name, group, spots, spot: 0, templates });
+    const want = +(viewPrefs().spot || 0);
+    Object.assign(zoneState, { name, group, spots, spot: want < spots.length ? want : 0, templates });
     root.add(group);
     const sel = $("zoneSpot"); sel.innerHTML = "";
     spots.forEach((p, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = `${i + 1} · ${Math.round(p.x)}, ${Math.round(p.y)}`; sel.append(o); });
-    $("zoneSpotWrap").hidden = spots.length < 2;
+    sel.value = String(zoneState.spot); $("zoneSpotWrap").hidden = spots.length < 2;
     note(`${name}.s3d: ${meshes.length} zone meshes, ${group.children.length - 1} objects${spots.length > 1 ? `, ${spots.length} scenes` : ""}.`);
     arrange(); if (current) frame(current);
   } catch (e) { note(`Backdrop: ${e.message}`, true); }
@@ -3216,7 +3221,7 @@ function placeZone(real, mode) {
   else if (current) feet = modelBox(current.userData.model).min.z;
   g.position.set(-spot.x, -spot.y, feet - spot.z);
 }
-$("zoneSpot").addEventListener("change", e => { zoneState.spot = +e.target.value || 0; arrange(); });
+$("zoneSpot").addEventListener("change", e => { zoneState.spot = +e.target.value || 0; arrange(); saveView(); });
 $("friendlyName").addEventListener("change", e => {
   if (!currentName) return; const n = e.target.value.trim();
   if (n) friendly[currentName] = n; else delete friendly[currentName]; saveNames(); });
@@ -3249,12 +3254,25 @@ document.querySelector("aside").addEventListener("click", e => {
   if (narrow.matches && !isFull() && e.target.closest("#models button, #texs button"))
     setTimeout(() => stage.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
 });
-$("bright").addEventListener("input", applyBrightness);
-$("lightAz").addEventListener("input", applyLightDir);
-$("lightEl").addEventListener("input", applyLightDir);
-$("lightReset").addEventListener("click", () => { $("lightAz").value = 15; $("lightEl").value = 20; applyLightDir(); });
-applyLightDir();
-$("backdrop").addEventListener("change", applyStageColor);
+// View settings (brightness, ambient, light direction, backdrop and scene),
+// kept in this browser. A zone backdrop waits for the client folder.
+const VIEW_KEY = "eqg-viewer.view.v1";
+function viewPrefs() { try { return JSON.parse(localStorage.getItem(VIEW_KEY) || "{}") || {}; } catch (e) { return {}; } }
+function saveView() {
+  const v = { bright: $("bright").value, ambient: $("ambient").value, lightAz: $("lightAz").value, lightEl: $("lightEl").value,
+    backdrop: $("backdrop").value, spot: zoneState.spot || 0 };
+  try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {}
+}
+{ const v = viewPrefs();
+  for (const id of ["bright", "ambient", "lightAz", "lightEl"]) if (v[id] !== undefined && isFinite(+v[id])) $(id).value = v[id];
+  if (v.backdrop && !v.backdrop.startsWith("zone:") && [...$("backdrop").options].some(o => o.value === v.backdrop)) $("backdrop").value = v.backdrop; }
+$("bright").addEventListener("input", () => { applyBrightness(); saveView(); });
+$("ambient").addEventListener("input", () => { applyBrightness(); saveView(); });
+$("lightAz").addEventListener("input", () => { applyLightDir(); saveView(); });
+$("lightEl").addEventListener("input", () => { applyLightDir(); saveView(); });
+$("lightReset").addEventListener("click", () => { $("lightAz").value = 15; $("lightEl").value = 20; $("ambient").value = 1; applyLightDir(); applyBrightness(); saveView(); });
+applyLightDir(); applyBrightness(); applyStageColor();
+$("backdrop").addEventListener("change", () => { applyStageColor(); saveView(); });
 applyBrightness(); applyStageColor();
 controls.autoRotateSpeed = 2.5;
 

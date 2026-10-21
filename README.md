@@ -137,8 +137,12 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   - `NewArmorTagData.txt` rows that use unregistered models.
 
   Click a finding to open the model.
-- **Viewing:** full screen, a phone layout, adjustable light direction and a
-  Rotate 90° button for sideways `.s3d` items.
+- **Viewing:** full screen, a phone layout, brightness, an **Ambient**
+  slider (0 turns the ambient light off, so only the main lights shade the
+  model), adjustable light direction and a Rotate 90° button for sideways
+  `.s3d` items. Brightness, ambient, light direction, backdrop and scene are
+  remembered in the browser; a zone backdrop comes back once the client
+  folder is picked.
 - **Backdrop:** black, grey or the page colour, or a character-select zone
   from your client folder: `load.s3d` (the marble room) or `load2.s3d`, with
   their placed objects from `load_obj.s3d` / `load2_obj.s3d`. `load2` holds
