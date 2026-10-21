@@ -11,7 +11,7 @@ and never uploaded.** No game files are included in this repository.
 
 ## Use it
 
-- **Online:** <https://zero-hex.github.io/Everquest_Model_VIewer/> (GitHub
+- **Online:** <https://zero-hex.github.io/Everquest_Model_Viewer/> (GitHub
   Pages, served from this repository's `main` branch).
 - **Offline:** download the repository and open `index.html`. The three.js and
   pako libraries it needs are in `vendor/`.
