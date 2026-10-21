@@ -53,7 +53,9 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
     materials when `global<NN>_amr.s3d` is in the folder.
   - **Hero's Forge set:** pick a set number. The pieces for that race are found
     through `NewArmorTagData.txt` and `OnDemandResources.txt`, put on the
-    body and follow the animation.
+    body and follow the animation. An armor piece you have open takes its
+    slot in the set, replacing the set's piece, so a custom piece can be
+    checked against the rest of a set. Weapons and shields are held.
 - **Find:** open any item by ID through `OnDemandResources.txt`, by archive
   name, or by actor name inside the `.s3d` equipment archives.
 - **Recently opened:** reopen models you looked at before.

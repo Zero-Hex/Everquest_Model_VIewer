@@ -1559,7 +1559,7 @@ async function loadClientEntries(entries, rootName) {
   $("find").placeholder = `Find in ${client.name || "client"}: IT10810, 10810, archive…`;
   $("arcInfo").classList.remove("err");
   $("arcInfo").textContent = `${client.name}: ${client.archives.size} archives` + (reg ? ", OnDemandResources.txt loaded" : ", no Resources/OnDemandResources.txt") + ". Use Find to open an item.";
-  renderRecent(); bodyOptions();
+  renderRecent(); bodyOptions(); readTags().then(() => arrange()).catch(() => {});
 }
 async function walkClientHandle(dir) {
   const out = [], root = dir.name;
@@ -2096,15 +2096,18 @@ const SLOT_NAMES = ["Helm", "Chest", "Arms", "Wrists", "Hands", "Legs", "Feet", 
 // Points for pieces without bones, main / second (from the client's slot table).
 const SLOT_POINTS = [["HEAD_POINT"], ["CHEST_POINT"], ["SHOULDR_POINT", "SHOULDL_POINT"], ["GAUNTR_POINT", "GAUNTL_POINT"], ["FIHANDR", "FIHANDL"],
   ["PELVIS_POINT"], ["LEGL_POINT", "LEGR_POINT"], ["CHEST_POINT"]];
-let tagRows = null, tagFor = null;
+let tagRows = null, tagFor = null, tagSlot = new Map();   // IT number -> { slot, second }
 async function readTags() {
   if (tagFor === client.tags) return tagRows;
-  tagFor = client.tags; tagRows = [];
+  tagFor = client.tags; tagRows = []; tagSlot = new Map();
   if (!client.tags) return tagRows;
   for (const l of (await (await client.tags.get()).text()).split(/\r?\n/)) {
     if (!l.trim() || l.startsWith("#")) continue; const f = l.split("\t"), id = parseInt(f[0], 10);
     if (!(id >= 0)) continue;
-    tagRows.push({ set: Math.floor(id / 100), slot: id % 100, tag: (f[1] || "").trim(), it: (f[2] || "").trim(), pair: (f[3] || "").trim() });
+    const r = { set: Math.floor(id / 100), slot: id % 100, tag: (f[1] || "").trim(), it: (f[2] || "").trim(), pair: (f[3] || "").trim() };
+    tagRows.push(r);
+    if (/^\d+$/.test(r.it) && !tagSlot.has(r.it)) tagSlot.set(r.it, { slot: r.slot, second: false });
+    if (/^\d+$/.test(r.pair) && !tagSlot.has(r.pair)) tagSlot.set(r.pair, { slot: r.slot, second: true });
   }
   return tagRows;
 }
@@ -2159,7 +2162,7 @@ function attach(mesh, m) { m.decompose(mesh.position, mesh.quaternion, mesh.scal
 function place(mesh, pos, rotY) { mesh.position.set(...pos); mesh.rotation.set(0, rotY || 0, 0); mesh.scale.set(1, 1, 1); mesh.updateMatrixWorld(true); }
 function restGeometry(m) { const g = m.geometry, md = m.userData.model; if (md && md.nBone && !(skin && skin.mesh === m)) { g.attributes.position.array.set(md.pos); g.attributes.normal.array.set(md.nrm); g.attributes.position.needsUpdate = g.attributes.normal.needsUpdate = true; } }
 function arrange() {
-  const mode = $("figure").value, real = mode !== "off" && !!body.mesh;
+  let mode = $("figure").value; const real = mode !== "off" && !!body.mesh;
   $("bodywrap").hidden = mode === "off"; $("bodySec").hidden = !body.model || mode === "off";
   if (mode === "off" || real) { if (figureGroup) figureGroup.visible = false; }
   else { if (!figureGroup) { figureGroup = buildFigure(); root.add(figureGroup); } figureGroup.visible = true; }
@@ -2178,6 +2181,9 @@ function arrange() {
     const bind = worldMatrices(model.bones, model.bones.map(b => trs(b.pos, [-b.quat[0], -b.quat[1], -b.quat[2], b.quat[3]], b.scale)));
     body.skinned.push({ mesh, model, map, bindInv: bind.map(m => m.clone().invert()) }); return true; };
   if (real) for (const x of body.worn) { const sp = SLOT_POINTS[x.mesh.userData.slot] || []; if (!skinTo(x.mesh)) link(x.mesh, sp[x.mesh.userData.second ? 1 : 0] || sp[0]); }
+  // Armor pieces (IT number in NewArmorTagData.txt) know their slot.
+  const slotOf = m => { const id = /^it(\d+)\.mod$/i.exec((m === current ? currentKey : m.userData.key) || ""); return id ? tagSlot.get(id[1]) : null; };
+  if (mode === "hold" && real && all.some(slotOf)) mode = "wear";      // an armor piece is worn, not held
   if (mode === "hold" && real) {
     // Main hand R_POINT; the second item in L_POINT, or SHIELD_POINT for a shield.
     const [main, second] = all, shieldAt = body.boneIdx.has("SHIELD_POINT") ? "SHIELD_POINT" : "L_POINT";
@@ -2192,14 +2198,23 @@ function arrange() {
     if (second) { const sh = isShieldLike(second.userData.model);
       place(second, sh ? [BODY.lForearm[0], BODY.lForearm[1] + 0.35, BODY.lForearm[2]] : [BODY.lHand[0] + 0.15, BODY.lHand[1], BODY.lHand[2]], stand(second)); }
   } else if (mode === "wear") {
+    // An armor piece (its IT number in NewArmorTagData.txt) takes its slot,
+    // hiding the set's piece there; anything else is held, as in Holding.
+    const held = [];
     for (const m of all) {
-      const model = m.userData.model;
+      const model = m.userData.model, sl = slotOf(m);
+      if (real && sl) for (const x of body.worn) if (x.mesh.userData.slot === sl.slot && x.mesh.userData.second === sl.second) x.mesh.visible = false;
       if (real && skinTo(m)) continue;                              // skinned pieces follow the body's bones
       if (model.nBone || model.wld) continue;                       // without a body they are already in body position
-      const size = modelBox(model).getSize(new THREE.Vector3()), helm = size.z > 0.8;
+      const size = modelBox(model).getSize(new THREE.Vector3()), helm = sl ? sl.slot === 0 : size.z > 0.8;
+      if (real && sl) { const sp = SLOT_POINTS[sl.slot] || []; if (link(m, sp[sl.second ? 1 : 0] || sp[0])) continue; }
+      if (real && !sl) { held.push(m); continue; }                 // not an armor piece: a weapon or shield
       if (!(real && link(m, helm ? "HEAD_POINT" : body.boneIdx.has("GAUNTR_POINT") ? "GAUNTR_POINT" : "R_POINT")))
         place(m, helm ? BODY.head : BODY.rWrist);                   // static: helm on the head, the rest at the wrist
     }
+    const [main, second] = held, shieldAt = body.boneIdx.has("SHIELD_POINT") ? "SHIELD_POINT" : "L_POINT";
+    if (main) link(main, isShieldLike(main.userData.model) ? shieldAt : "R_POINT");
+    if (second) link(second, isShieldLike(second.userData.model) ? shieldAt : "L_POINT");
   }
   if (real) poseBody(performance.now());
   root.updateMatrixWorld(true);
