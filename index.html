@@ -1093,7 +1093,6 @@ controls.listenToKeyEvents && controls.listenToKeyEvents(window);
 // camera, so surfaces facing the viewer get about twice the texture's value
 // (a custom polearm head measured 2.2x in game) and glancing ones about half that.
 const LIGHT = { amb: 1.1, key: 1.1, rim: 0.15 };
-const SPEC = { masked: 0x808080, flat: 0x1c1c1c }; // specular colour with / without a normal-map mask
 const amb = new THREE.AmbientLight(0xffffff, LIGHT.amb); scene.add(amb);
 const key = new THREE.DirectionalLight(0xffffff, LIGHT.key); camera.add(key); key.target.position.set(0, 0, 0); camera.add(key.target);
 const rim = new THREE.DirectionalLight(0xd4ddff, LIGHT.rim); rim.position.set(-3, 1, -2); scene.add(rim);
@@ -1195,30 +1194,47 @@ function animationFor(texName) {
   return frames.length > 1 && delay > 0 ? { frames, delay } : null;
 }
 
-// EQ material features, patched into three's Phong shader:
-// - normal maps store X/Y only (blue is 0), so Z is rebuilt;
-// - the normal map's alpha is the specular mask (stock masks vary 0..~220);
-// - *E shaders add a sphere-mapped environment at e_fEnvMapStrength0.
-function patchMaterial(m, { normalMask, envTex, envStrength }) {
+// EQ material features, patched into three's Phong shader, following the
+// client's own compiled shaders (RenderEffects/SPL/SModel*.fxo and
+// SkinMesh*.fxo, ps_2_0), read as data:
+// - the shader name lists its features after "CB": S = specular,
+//   G = glow, E = environment (Opaque_MaxCBSGE1, ..SkinMeshCBGGE1Max);
+// - normal map: with G it is rebuilt as (x, y, 0.9) normalised and its blue
+//   channel is a glow mask added to the lighting; without G all three
+//   channels are the normal (stock maps store Z in blue there; blue 0 points
+//   the normal into the surface, and the client then lights it by ambient only);
+// - its alpha masks the specular, min(1, pow(N.H, e_fShininess0) x mask x N.L)
+//   x light colour -- no Blinn-Phong normalisation, which made white hot spots;
+// - E: the environment texture, sphere-mapped on the reflection vector, is
+//   added to the diffuse texture at e_fEnvMapStrength0 x 0.25 and then lit.
+function patchMaterial(m, { normalMode, glow, envTex, envStrength }) {
   m.onBeforeCompile = sh => {
-    let fs = sh.fragmentShader;
-    if (normalMask) {
+    let fs = sh.fragmentShader.replace("#include <lights_phong_pars_fragment>", THREE.ShaderChunk.lights_phong_pars_fragment.replace(
+      /reflectedLight\.directSpecular \+= [^;]*;/,
+      "reflectedLight.directSpecular += clamp( pow( max( dot( geometry.normal, normalize( directLight.direction + geometry.viewDir ) ), 0.0 ), material.specularShininess ) * material.specularStrength * dotNL, 0.0, 1.0 ) * directLight.color * material.specularColor;"));
+    if (normalMode) {
       fs = fs.replace("#include <normal_fragment_maps>", `
         vec4 eqN = texture2D( normalMap, vUv );
-        vec3 mapN = vec3( eqN.xy * 2.0 - 1.0, 0.0 );
-        mapN.z = sqrt( max( 0.0, 1.0 - dot( mapN.xy, mapN.xy ) ) );
+        vec3 mapN = ${normalMode === "xy09" ? "normalize( vec3( eqN.xy * 2.0 - 1.0, 0.9 ) )" : "normalize( eqN.xyz * 2.0 - 1.0 + vec3( 0.0, 0.0, 1e-4 ) )"};
         mapN.xy *= normalScale;
         normal = perturbNormal2Arb( -vViewPosition, normal, mapN, faceDirection );`)
         .replace("#include <specularmap_fragment>", "float specularStrength = texture2D( normalMap, vUv ).a;");
+      if (glow) fs = fs.replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n\ttotalEmissiveRadiance += diffuseColor.rgb * eqN.b;");
     }
     if (envTex) {
       sh.uniforms.eqEnv = { value: envTex }; sh.uniforms.eqEnvStrength = { value: envStrength };
       fs = fs.replace("#include <common>", "#include <common>\nuniform sampler2D eqEnv;\nuniform float eqEnvStrength;")
-        .replace("#include <envmap_fragment>", "outgoingLight += texture2D(eqEnv, normalize(normal).xy * 0.5 + 0.5).rgb * eqEnvStrength;\n#include <envmap_fragment>");
+        .replace("#include <lights_phong_fragment>", `{
+          vec3 eqV = normalize( vViewPosition ), eqVN = normalize( vNormal );
+          vec3 eqR = inverseTransformDirection( eqV - 2.0 * dot( eqV, eqVN ) * eqVN, viewMatrix );
+          vec2 eqUv = eqR.xz / max( 2.828 * sqrt( max( eqR.y + 1.0, 0.0 ) ), 1e-3 ) + 0.5;
+          diffuseColor.rgb += texture2D( eqEnv, eqUv ).rgb * eqEnvStrength * 0.25;
+        }
+        #include <lights_phong_fragment>`);
     }
     sh.fragmentShader = fs;
   };
-  m.customProgramCacheKey = () => "eq" + (normalMask ? "n" : "") + (envTex ? "e" : "");
+  m.customProgramCacheKey = () => "eq2" + (normalMode || "") + (glow ? "g" : "") + (envTex ? "e" : "");
 }
 
 function makeMaterial(mat) {
@@ -1237,14 +1253,15 @@ function makeMaterial(mat) {
     m = new THREE.MeshBasicMaterial({ color: 0xffffff, map: tex, transparent: true, blending: THREE.AdditiveBlending,
       depthWrite: false, side, wireframe: wire });
   } else {
-    // The shader name lists its features: MaxCB = colour + bump, S = specular, E = environment.
-    const hasSpec = /maxcbs/.test(shader), shin = +prop(mat, /^e_fShininess0$/i, 0) || 0;
+    // Features after "CB" in the shader name: S = specular, G = glow, E = environment.
+    const feat = (/(?:max|skinmesh)cb([a-z]*)\d/.exec(shader) || [, ""])[1];
+    const hasSpec = feat.includes("s"), glow = feat.includes("g"), shin = +prop(mat, /^e_fShininess0$/i, 0) || 0;
     const nrmName = prop(mat, /^e_TextureNormal0$/i, 2), nrm = useTex && nrmName ? textureFor(nrmName) : null;
     m = new THREE.MeshPhongMaterial({ color: tex ? 0xffffff : 0xb8b2a8, map: tex, side, wireframe: wire, normalMap: nrm,
-      shininess: Math.max(2, shin * 2), specular: new THREE.Color(!hasSpec ? 0x000000 : nrm ? SPEC.masked : SPEC.flat) });
+      shininess: shin > 0 ? shin : 10, specular: new THREE.Color(hasSpec ? 0xffffff : 0x000000) });
     const envName = prop(mat, /^e_TextureEnvironment0$/i, 2), envStr = +prop(mat, /^e_fEnvMapStrength0$/i, 0);
     const env = useTex && envName ? textureFor(envName) : null;
-    if (nrm || env) patchMaterial(m, { normalMask: !!nrm, envTex: env, envStrength: isFinite(envStr) && envStr > 0 ? Math.min(envStr, 2) : 0.5 });
+    patchMaterial(m, { normalMode: nrm ? (glow ? "xy09" : "rgb") : null, glow, envTex: env, envStrength: isFinite(envStr) && envStr > 0 ? envStr : 1 });
     if (shader.startsWith("chroma")) m.alphaTest = 0.5;
     else if (shader.startsWith("alpha")) { m.transparent = true; m.depthWrite = false; if (mat.opacity < 1) m.opacity = mat.opacity; }
   }
@@ -1968,11 +1985,13 @@ function dropBody() {
   Object.assign(body, { value: "stick", label: "", model: null, mesh: null, points: {}, anims: new Map(), anim: null, moving: false, links: [], skinned: [] });
   bodyPanel();
 }
-function buildBodyMesh() {
+function buildBodyMesh(bodyOnly) {
+  const vis = body.mesh ? body.mesh.visible : true;
   if (body.mesh) disposeMesh(body.mesh);
   texScope = { files: body.texFiles || body.files, id: body.arc + "#" + body.mm };
   try { body.mesh = buildMesh(body.model); } finally { texScope = null; }
-  body.mesh.userData.model = body.model; root.add(body.mesh);
+  body.mesh.userData.model = body.model; body.mesh.visible = vis; root.add(body.mesh);
+  if (bodyOnly) return;
   for (const x of body.worn) { const old = x.mesh; texScope = { files: x.files, id: x.arc }; try { x.mesh = buildMesh(x.model); } finally { texScope = null; }
     x.mesh.userData = old.userData; disposeMesh(old); root.add(x.mesh); }
 }
@@ -2004,7 +2023,7 @@ async function loadEqgBody(value, arc, arcName, code, files) {
   const af = client.archives.has(`${lc}_anims.eqg`) ? await clientArc(`${lc}_anims.eqg`) : null;
   for (const src of [files, af].filter(Boolean)) for (const [k, x] of src) { const m = re.exec(k); if (m && !anims.has(m[1])) anims.set(m[1], { race: code, file: x }); }
   if (body.mesh) disposeMesh(body.mesh);
-  Object.assign(body, { kind: "eqg", nge: true, luclin: false, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones,
+  Object.assign(body, { allTris: model.tris, kind: "eqg", nge: true, luclin: false, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones,
     suffix: [], boneIdx, rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims: new Map([...anims].sort((x, y) => x[0].localeCompare(y[0]))),
     mms: ["00"], baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
 }
@@ -2061,7 +2080,7 @@ async function loadWldBody(value, arc, arcName, code, files) {
   for (const k of files.keys()) { const m = new RegExp(`^${lc}[a-z]{2}(\\d\\d)\\d\\d\\.(bmp|dds)$`).exec(k); if (m) mms.add(m[1]); }
   for (const k of client.archives.keys()) { const m = /^global(\d\d)_amr\.s3d$/.exec(k); if (m) mms.add(m[1]); }
   if (body.mesh) disposeMesh(body.mesh);
-  Object.assign(body, { kind: "wld", nge: false, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones, suffix, boneIdx,
+  Object.assign(body, { allTris: model.tris, kind: "wld", nge: false, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones, suffix, boneIdx,
     rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims, mms: [...mms].sort(), luclin,
     baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
 }
@@ -2071,11 +2090,42 @@ async function setBodyTexture(mm) {
   applyBodyMats();
 }
 // Body parts under a worn piece whose NewArmorTagData row says Hide Mesh
-// (legs, boots, robes): by slot, the body materials <race><part>NNNN.
+// (legs, boots, robes): by slot, the body materials <race><part>NNNN. Only
+// the triangles a piece actually covers are hidden (see coverHidden): hiding
+// the whole part left see-through gaps where pieces are separate pads
+// (froglok legs) or stop short (above the Iksar tail).
 const HIDE_PARTS = { 5: ["LG"], 6: ["FT"], 7: ["LG"] };
+function coverHidden() {
+  body.coverDirty = false;
+  const parts = new Set(body.hideMesh ? body.worn.filter(x => x.hide && x.mesh.visible).flatMap(x => HIDE_PARTS[x.mesh.userData.slot] || []) : []);
+  let tris = body.allTris;
+  if (parts.size && body.mesh) {
+    const size = body.box.getSize(new THREE.Vector3()), R = Math.max(size.x, size.y, size.z) * 0.012, R2 = R * R;
+    // Points on the worn pieces as posed: vertices plus edge midpoints and centres.
+    const grid = new Map(), key = (x, y, z) => `${Math.floor(x / R)},${Math.floor(y / R)},${Math.floor(z / R)}`;
+    const addPt = (x, y, z) => { const k = key(x, y, z); let a = grid.get(k); if (!a) grid.set(k, a = []); a.push(x, y, z); };
+    for (const x of body.worn) { if (!x.mesh.visible) continue;
+      const P = x.mesh.geometry.attributes.position.array, I = x.mesh.geometry.index ? x.mesh.geometry.index.array : null;
+      for (let i = 0; i < P.length; i += 3) addPt(P[i], P[i + 1], P[i + 2]);
+      if (I) for (let t = 0; t < I.length; t += 3) { const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
+        addPt((P[a] + P[b] + P[c]) / 3, (P[a + 1] + P[b + 1] + P[c + 1]) / 3, (P[a + 2] + P[b + 2] + P[c + 2]) / 3);
+        for (const [u, v] of [[a, b], [b, c], [c, a]]) addPt((P[u] + P[v]) / 2, (P[u + 1] + P[v + 1]) / 2, (P[u + 2] + P[v + 2]) / 2); } }
+    const B = body.mesh.geometry.attributes.position.array;
+    const covered = v => { const x = B[v * 3], y = B[v * 3 + 1], z = B[v * 3 + 2], cx = Math.floor(x / R), cy = Math.floor(y / R), cz = Math.floor(z / R);
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let k = -1; k <= 1; k++) { const a = grid.get(`${cx + i},${cy + j},${cz + k}`); if (!a) continue;
+        for (let q = 0; q < a.length; q += 3) { const dx = a[q] - x, dy = a[q + 1] - y, dz = a[q + 2] - z; if (dx * dx + dy * dy + dz * dz < R2) return true; } }
+      return false; };
+    const partOf = new Map(body.model.mats.map(m => [m.index, (m.name || "").slice(body.code.length, body.code.length + 2).toUpperCase()]));
+    tris = tris.filter(t => !(parts.has(partOf.get(t[3])) && covered(t[0]) && covered(t[1]) && covered(t[2])));
+  }
+  if (tris !== body.model.tris) { body.model.tris = tris; body.model.nTri = tris.length; buildBodyMesh(true); return true; }
+  return false;
+}
 function applyBodyMats() {
   const mm = body.mm, lc = body.code.toLowerCase(), amr = body.amr;
-  const hidden = new Set(body.hideMesh ? body.worn.filter(x => x.hide).flatMap(x => HIDE_PARTS[x.mesh.userData.slot] || []) : []);
+  // Under a helm whose row doesn't set Show Hair, head page 06 goes too
+  // (<race>HE0006: a human's ears, an Iksar's spikes -- what a helm covers).
+  const helmHides = body.hideMesh && body.worn.some(x => x.mesh.userData.slot === 0 && !x.showHair);
   const has = k => body.files.has(k) || (amr && amr.has(k));
   body.texFiles = amr ? { get: k => body.files.get(k) || amr.get(k), has } : null;
   // The material name says the slot (HUMCH0001_MDF = chest, page 01); its
@@ -2088,8 +2138,9 @@ function applyBodyMats() {
   body.model.mats = body.baseMats.map(b => { const m = JSON.parse(JSON.stringify(b));
     m.props.forEach(p => { if (/^e_TextureDiffuse0$/i.test(p.name)) p.value = swap(m.name, p.value); });
     if (m.anim) m.anim.files = m.anim.files.map(f => swap(m.name, f));
-    if (hidden.has((m.name || "").slice(body.code.length, body.code.length + 2).toUpperCase())) m.kind = "invisible";
+    if (helmHides && new RegExp(`^${body.code}HE\\d\\d06_MDF$`, "i").test(m.name || "")) m.kind = "invisible";
     return m; });
+  body.model.tris = body.allTris; body.model.nTri = body.allTris.length; body.coverDirty = true;
   buildBodyMesh();
 }
 function setBodyAnim(key) {
@@ -2165,7 +2216,7 @@ async function readTags() {
   for (const l of (await (await client.tags.get()).text()).split(/\r?\n/)) {
     if (!l.trim() || l.startsWith("#")) continue; const f = l.split("\t"), id = parseInt(f[0], 10);
     if (!(id >= 0)) continue;
-    const r = { set: Math.floor(id / 100), slot: id % 100, tag: (f[1] || "").trim(), it: (f[2] || "").trim(), pair: (f[3] || "").trim(), noAdj: (f[4] || "").trim() === "-1", hide: (f[6] || "").trim() === "1" };
+    const r = { set: Math.floor(id / 100), slot: id % 100, tag: (f[1] || "").trim(), it: (f[2] || "").trim(), pair: (f[3] || "").trim(), noAdj: (f[4] || "").trim() === "-1", showHair: (f[5] || "").trim() === "1", hide: (f[6] || "").trim() === "1" };
     tagRows.push(r);
     if (/^\d+$/.test(r.it) && !tagSlot.has(r.it)) tagSlot.set(r.it, { slot: r.slot, second: false, noAdj: r.noAdj });
     if (/^\d+$/.test(r.pair) && !tagSlot.has(r.pair)) tagSlot.set(r.pair, { slot: r.slot, second: true, noAdj: r.noAdj });
@@ -2202,7 +2253,8 @@ function setPieces(rows, set) {
     const here = rows.filter(r => r.set === set && r.slot === slot);
     // A later row for the same slot and tag overrides an earlier one.
     const last = t => here.filter(x => x.tag === t).pop();
-    const r = last(body.code) || (body.luclin && last("L")) || (body.nge && last("N")) || last("*");
+    // LF = every Luclin female model, L = every Luclin model, N = newer models.
+    const r = last(body.code) || (body.luclin && body.code[2] === "F" && last("LF")) || (body.luclin && last("L")) || (body.nge && last("N")) || last("*");
     if (r) out.push(r);
   }
   return out;
@@ -2220,7 +2272,7 @@ async function setBodySet(set) {
     const model = readMOD(f.bytes); let mesh;
     texScope = { files, id: line.arc.toLowerCase() }; try { mesh = buildMesh(model); } finally { texScope = null; }
     mesh.userData = { model, slot: r.slot, second, it, noAdj: r.noAdj };
-    root.add(mesh); body.worn.push({ mesh, model, files, arc: line.arc.toLowerCase(), hide: r.hide });
+    root.add(mesh); body.worn.push({ mesh, model, files, arc: line.arc.toLowerCase(), hide: r.hide, showHair: r.showHair });
   }
   applyBodyMats();
   return `Set ${set}: ${pieces.map(r => SLOT_NAMES[r.slot] || r.slot).join(", ") || "no pieces for this race"}` + (missing.length ? `. Missing: ${missing.join(", ")}` : "");
@@ -2242,7 +2294,7 @@ async function bodyPanel() {
   const tx = $("bodyTex"); tx.innerHTML = ""; for (const mm of body.mms) o(tx, mm, `${mm} · ${matLabel(mm)}`); tx.value = body.mm;
   const st = $("bodySet"), rows = await readTags(); st.innerHTML = "";
   o(st, "", rows.length ? "None" : "No NewArmorTagData.txt in the client folder");
-  const sets = [...new Set(rows.filter(r => r.tag === body.code || r.tag === "*" || (body.luclin && r.tag === "L") || (body.nge && r.tag === "N")).map(r => r.set))].sort((a, b) => a - b);
+  const sets = [...new Set(rows.filter(r => r.tag === body.code || r.tag === "*" || (body.luclin && (r.tag === "L" || (r.tag === "LF" && body.code[2] === "F"))) || (body.nge && r.tag === "N")).map(r => r.set))].sort((a, b) => a - b);
   for (const s of sets) o(st, String(s), `Set ${s} (${setPieces(rows, s).length} slots)`);
   st.disabled = !sets.length || !registry; st.value = body.set;
   $("bodyHide").checked = body.hideMesh;
@@ -2266,7 +2318,11 @@ function arrange() {
     body.links.push({ mesh, at, adj }); return true; };
   const skinTo = mesh => { const model = mesh.userData.model;
     if (!model.nBone || !model.weights.some(w => w && w.length) || (skin && skin.mesh === mesh)) return false;
-    const map = model.bones.map(b => body.boneIdx.has(b.name) ? body.boneIdx.get(b.name) : 0);   // ROOT_BONE and unknowns follow the root
+    // A bone the body lacks (Drakkin pieces carry twist helpers such as
+    // ARML_BCEP_2) follows its nearest parent the body has; ROOT_BONE the root.
+    const find = b => { for (let i = b, guard = 0; i >= 0 && guard < model.bones.length; i = model.bones[i].parent, guard++)
+      if (body.boneIdx.has(model.bones[i].name)) return body.boneIdx.get(model.bones[i].name); return 0; };
+    const map = model.bones.map((b, i) => find(i));
     // The piece's own bind pose (its bone rotations read transposed, as the
     // toolkit found): pelvis at the origin and feet turned unlike the WLD
     // rest pose, so vertices are moved by (posed body bone) x (bind)^-1.
@@ -2308,7 +2364,7 @@ function arrange() {
     if (main) link(main, isShieldLike(main.userData.model) ? shieldAt : "R_POINT");
     if (second) link(second, isShieldLike(second.userData.model) ? shieldAt : "L_POINT");
   }
-  if (real) poseBody(performance.now());
+  if (real) { poseBody(performance.now()); if (body.coverDirty && coverHidden()) poseBody(performance.now()); }
   root.updateMatrixWorld(true);
 }
 function sceneBox() {
@@ -2907,7 +2963,7 @@ let lastFrame = performance.now();
 resize();
 exampleTextures();
 show(exampleModel(), "Example (built in, not an EQ asset)");
-window.__eqgv = { body, applyBodyMats, trs, worldMatrices, get adjMap() { return adjMap; }, makeZip, get cmp() { return cmp; }, get camera() { return camera; }, readPTS, readPRT, readEDD, readTGA, loadClientFiles, fx, readPFS, readMOD, readDDS, readBMP, readANI, readWLD, wldActorParts, wldSkeleton, wldMesh, uvFlipScore, mipChain, get skin() { return skin; }, openFiles, textureFor, texErrors, preflight, loadRegistry, get current() { return current; } };
+window.__eqgv = { body, applyBodyMats, get controls() { return controls; }, trs, worldMatrices, get adjMap() { return adjMap; }, makeZip, get cmp() { return cmp; }, get camera() { return camera; }, readPTS, readPRT, readEDD, readTGA, loadClientFiles, fx, readPFS, readMOD, readDDS, readBMP, readANI, readWLD, wldActorParts, wldSkeleton, wldMesh, uvFlipScore, mipChain, get skin() { return skin; }, openFiles, textureFor, texErrors, preflight, loadRegistry, get current() { return current; } };
 </script>
 </body>
 </html>

@@ -27,9 +27,21 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
 - **Drawn like the client:**
   - one-sided faces;
   - V read as stored;
-  - normal maps, with the normal map's alpha as the specular mask;
-  - environment shine on `*E` shaders, additive glow on `AddAlpha` materials,
-    cut-outs and see-through materials;
+  - shading follows the client's own compiled shaders
+    (`RenderEffects/SPL/SModel*.fxo`, `SkinMesh*.fxo`), read from the
+    shader bytecode. The letters after `CB` in the shader name select the
+    features: `S` specular, `G` glow, `E` environment.
+    - **Normal maps on `G` shaders:** rebuilt as (x, y, 0.9), with blue as a
+      glow mask added to the lighting.
+    - **Normal maps on other shaders:** all three channels are the normal
+      (stock maps keep Z in blue; a blue of 0 points the normal into the
+      surface and the client then lights it by ambient only).
+    - **Specular:** `min(1, pow(N·H, e_fShininess0) × mask × N·L)` times the
+      light colour, where the mask is the normal map's alpha.
+    - **Environment map:** sphere-mapped on the reflection vector and added
+      to the texture at `e_fEnvMapStrength0 × 0.25` before lighting.
+  - additive glow on `AddAlpha` materials, cut-outs and see-through
+    materials;
   - animated textures;
   - stored mip levels, with a Mip control to see what shows at a distance.
 - **Item animations:** an item's own `.ani` files play on its skeleton.
@@ -62,7 +74,9 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
     slot in the set, replacing the set's piece, so a custom piece can be
     checked against the rest of a set. Weapons and shields are held. The tag
     file's Hide Mesh flag is applied: the body's legs or feet under such a
-    piece are hidden, as in game (a checkbox turns this off). Drakkin use the
+    piece are hidden where the piece covers them (a checkbox turns this off),
+    and a helm without Show Hair hides head page 06 (a human's ears, an
+    Iksar's spikes). Luclin females use `LF` rows. Drakkin use the
     tag file's `N` rows. Pieces hung on a point (helms, bracers,
     gloves) get the race's fit from `NewArmorAdjData.txt` (scale, offset and
     rotation per point) unless their tag row says Ignore Adjustment (-1).
