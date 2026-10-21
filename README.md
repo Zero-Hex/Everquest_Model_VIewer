@@ -75,7 +75,11 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   - **Animation:** every animation the client has for the race, grouped as
     combat, movement, idle, poses, social and casting (`C08` is 1H
     slashing, `C03` 2H slashing, and so on). Races with no set of their own
-    use the one the client shares with them, the way the stock data does.
+    use the one the client shares with them, the way the stock data does:
+    on classic bodies, gnomes and halflings use the dwarves' set, ogres and
+    trolls the ogre female's, the rest the wood elves'. A borrowed set turns
+    the joints but keeps the body's own bone lengths and size, so short and
+    big races don't stretch or come apart.
     With **Loop** off, an animation plays once and the body goes back to
     standing; **Play** runs it again.
   - **Armor texture:** None, leather, chain, plate, monk, robes, and Velious

@@ -1980,6 +1980,9 @@ const raceLabel = code => { const r = RACE[code.slice(0, 2)], g = code[2]; retur
 // dark, high and half elves and erudites carry none and use another race's
 // set; classic races without a set use the elf ones in global_chr.s3d.
 const BORROW = { DAM: "ELM", DAF: "ELF", HIM: "ELM", HIF: "ELF", HAM: "HUM", HAF: "HUF", ERM: "HUM", ERF: "HUF", FRF: "FRM" };
+// Classic races without their own set share one by build: the short races the
+// dwarves', the big ones the ogre female's, the rest the wood elves'.
+const CLASSIC_BORROW = { GNM: "DWM", HOM: "DWM", GNF: "DWF", HOF: "DWF", OGM: "OGF", TRM: "OGF", TRF: "OGF" };
 const ANIM_NAMES = { C01: "Kick", C02: "Piercing", C03: "2H slashing", C04: "2H blunt", C05: "Throwing", C06: "Off hand", C07: "Bash",
   C08: "1H slashing / blunt", C09: "Archery", C10: "Swimming attack", C11: "Round kick", D01: "Hit", D02: "Heavy hit", D05: "Death",
   L01: "Walk", L02: "Run", L03: "Running jump", L04: "Standing jump", L05: "Fall", L06: "Duck walk", L07: "Climb", L08: "Duck", L09: "Tread water",
@@ -2118,7 +2121,7 @@ async function loadEqgBody(value, arc, arcName, code, files) {
   const mms = [...new Set([...files.keys()].map(k => new RegExp(`^${lc}_(\\d\\d)_00_.+\\.mod$`).exec(k)).filter(Boolean).map(m => m[1]))].sort();
   if (body.mesh) disposeMesh(body.mesh);
   dropParts();
-  Object.assign(body, { allTris: model.tris, kind: "eqg", nge: true, luclin: false, matDefs: null, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones,
+  Object.assign(body, { allTris: model.tris, kind: "eqg", nge: true, luclin: false, matDefs: null, lendRest: null, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones,
     suffix: [], boneIdx, rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims: new Map([...anims].sort((x, y) => x[0].localeCompare(y[0]))),
     mms: mms.length ? mms : ["00"], baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
 }
@@ -2160,7 +2163,7 @@ async function loadWldBody(value, arc, arcName, code, files) {
   const rest = bones.map(b => { const d = decodeTrack(w, b.track); return d ? d.frames[0] : { q: new THREE.Quaternion(), t: new THREE.Vector3(), s: 1 }; });
   const restWorld = worldMatrices(bones, rest.map(r => new THREE.Matrix4().compose(r.t, r.q, new THREE.Vector3(r.s, r.s, r.s))));
   // Animation sources: this WLD, its _chr2 sibling, and the race it borrows from.
-  const luclin = bones.length > 60, lend = luclin ? BORROW[code] : (code[2] === "F" ? "ELF" : "ELM"), races = [code];
+  const luclin = bones.length > 60, lend = luclin ? BORROW[code] : CLASSIC_BORROW[code] || (code[2] === "F" ? "ELF" : "ELM"), races = [code];
   if (lend && lend !== code) races.push(lend);
   const extra = luclin ? [arc.replace(/_chr\.s3d$/, "_chr2.s3d")].concat(lend ? [`global${lend.toLowerCase()}_chr.s3d`, `global${lend.toLowerCase()}_chr2.s3d`] : []) : ["global3_chr.s3d"];
   const sources = [w];
@@ -2180,6 +2183,11 @@ async function loadWldBody(value, arc, arcName, code, files) {
       break;
     }
   }
+  // The lender's standing pose, bone by bone, so a borrowed track can be fitted
+  // to this body's bone lengths (see playBodyAnim).
+  const byName = new Map(); for (const sw of sources) for (const fr of sw.frags) if (fr && fr.type === 0x13 && !byName.has(fr.name)) byName.set(fr.name, { w: sw, frag: fr });
+  const lendRest = new Map();
+  for (const R of races) if (R !== code) lendRest.set(R, suffix.map(s => { const ref = s && byName.get(R + s + "_TRACK"), d = ref && decodeTrack(ref.w, ref.frag); return d ? d.frames[0] : null; }));
   const anims = new Map();
   for (const key of [...found.keys()].sort()) {
     const byR = found.get(key), best = Math.max(...[...byR.values()].map(m => m.size));
@@ -2199,7 +2207,7 @@ async function loadWldBody(value, arc, arcName, code, files) {
     const m = new RegExp(`^${code}[A-Z]{2}(\\d\\d)\\d\\d_MDF$`, "i").exec(x.name); if (m) mms.add(m[1]); }
   if (body.mesh) disposeMesh(body.mesh);
   Object.assign(body, { allTris: model.tris, kind: "wld", nge: false, value, label: `${code} · ${raceLabel(code)} (${arcName})`, arc, files, model, mesh: null, box, code, bones, suffix, boneIdx,
-    rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims, mms: [...mms].sort(), luclin, matDefs,
+    rest, restInv: restWorld.map(m => m.clone().invert()), world: restWorld, anims, lendRest, mms: [...mms].sort(), luclin, matDefs,
     baseMats: model.mats.map(m => JSON.parse(JSON.stringify(m))), mm: "00", amr: null, texFiles: null, points: {} });
 }
 async function setBodyTexture(mm) {
@@ -2314,6 +2322,15 @@ function playBodyAnim(key) {
     body.moving = !!body.anim;
   } else {
     body.anim = A ? body.bones.map((b, i) => { const ref = A.tracks.get(body.suffix[i]); return (ref && decodeTrack(ref.w, ref.frag)) || null; }) : null;
+    // A track borrowed from another race turns the joints but keeps this
+    // body's proportions: each shift is scaled by (this bone's length / the
+    // lender's), and the bone keeps its own size. Otherwise a gnome on dwarf
+    // tracks, or an ogre on ogre-female ones, stretches and comes apart.
+    const lr = A && A.race !== body.code && body.lendRest && body.lendRest.get(A.race);
+    if (lr) body.anim.forEach((tr, i) => {
+      if (!tr) return; const own = body.rest[i], l = lr[i], k = l && l.t.length() > 1e-6 ? own.t.length() / l.t.length() : null;
+      for (const fr of tr.frames) { if (k !== null) fr.t.multiplyScalar(k); else fr.t.copy(own.t); fr.s = own.s; }
+    });
     body.moving = !!(body.anim && body.anim.some(t => t && t.frames.length > 1));
   }
   body.animDur = !body.anim ? 0 : body.kind === "eqg" ? body.anim.duration : Math.max(0, ...body.anim.map(t => t ? t.frames.length * t.sleep : 0));
