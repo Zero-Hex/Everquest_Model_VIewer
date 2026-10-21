@@ -215,7 +215,7 @@ label.field select { width: 100%; min-width: 0; }
         <label class="field" for="bodyAnim">Animation <select id="bodyAnim"></select></label>
         <label class="field" for="bodyTex">Armor texture <select id="bodyTex"></select></label>
         <label class="field" for="bodySet">Hero's Forge set <select id="bodySet"></select></label>
-        <label class="toggle"><input type="checkbox" id="bodyHide" checked> Hide the body under armor (the tag file's Hide Mesh)</label>
+        <label class="toggle"><input type="checkbox" id="bodyHide" checked> Hide the body under armor</label>
         <div id="bodyColors" hidden><label class="toggle" for="hairColor">Hair colour <input type="color" id="hairColor"></label>
           <label class="toggle" for="tattooColor">Tattoo colour <input type="color" id="tattooColor"></label></div>
         <p class="hint" id="bodySetInfo">Hero's Forge sets come from Resources/NewArmorTagData.txt; each piece is found through OnDemandResources.txt. Pieces show on Luclin bodies in game.</p>
@@ -698,17 +698,18 @@ function wldSkeleton(w, f, pose) {
     const tr = (tracks && b.track && tracks.get(pose + b.track.name)) || b.track;
     const t12 = tr && wRef(w, tr.o + 4, 0x12);
     if (!t12 || wU32(w, t12.o + 8) < 1) return new THREE.Matrix4();
-    // Old WLDs: eight i16 per frame (w, x, y, z rotation; x, y, z shift; shift
-    // denominator), whatever the track flags say. The newer format uses floats.
+    // Old WLDs: eight i16 per frame (w, x, y, z rotation; x, y, z shift over
+    // 256; scale over 256, see decodeTrack), whatever the track flags say. The
+    // newer format uses floats.
     const k = t12.o + 12;
-    let qx, qy, qz, qw, tx = 0, ty = 0, tz = 0;
+    let qx, qy, qz, qw, tx = 0, ty = 0, tz = 0, sc = 1;
     if (w.newFmt) { [qw, qx, qy, qz, tx, ty, tz] = [0, 4, 8, 12, 16, 20, 24].map(d => w.dv.getFloat32(k + d, true)); }
     else {
       qw = wI16(w, k); qx = wI16(w, k + 2); qy = wI16(w, k + 4); qz = wI16(w, k + 6);
-      const sd = wI16(w, k + 14); if (sd) { tx = wI16(w, k + 8) / sd; ty = wI16(w, k + 10) / sd; tz = wI16(w, k + 12) / sd; }
+      tx = wI16(w, k + 8) / 256; ty = wI16(w, k + 10) / 256; tz = wI16(w, k + 12) / 256; const s = wI16(w, k + 14); if (s > 0) sc = s / 256;
     }
     const quat = (qx || qy || qz || qw) ? new THREE.Quaternion(qx, qy, qz, qw).normalize() : new THREE.Quaternion();
-    return new THREE.Matrix4().compose(new THREE.Vector3(tx, ty, tz), quat, new THREE.Vector3(1, 1, 1));
+    return new THREE.Matrix4().compose(new THREE.Vector3(tx, ty, tz), quat, new THREE.Vector3(sc, sc, sc));
   });
   const world = worldMatrices(bones, local);
   return { bones, meshes, world };
@@ -1140,6 +1141,28 @@ function ddsFor(k, masked) {
            catch (e) { texErrors.set(k, e.message); console.warn("texture " + k + ": " + e.message); } }
   ddsCache.set(ck, d); return d;
 }
+// Luclin bodies draw an armor page over the skin page ("humchsk01.dds+
+// humch0201.dds"): the armor's alpha says where it covers, and 0 lets the
+// skin show (a clear 8x8 page = nothing worn there). Material 00 is the
+// default clothing (the loincloth), drawn the same way.
+function layered(names) {
+  const ls = names.map(n => ddsFor(n)).filter(Boolean).map(d => d.levels[0]);
+  if (!ls.length) return null;
+  const w = Math.max(...ls.map(l => l.w)), h = Math.max(...ls.map(l => l.h)), out = new Uint8Array(w * h * 4);
+  ls.forEach((l, li) => {
+    const px = new Uint8Array(l.rgba.buffer, l.rgba.byteOffset, l.rgba.byteLength), at = (x, y) => (((y % l.h) + l.h) % l.h * l.w + ((x % l.w) + l.w) % l.w) * 4;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const fx = (x + 0.5) * l.w / w - 0.5, fy = (y + 0.5) * l.h / h - 0.5, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0;
+      const a = at(x0, y0), b = at(x0 + 1, y0), c = at(x0, y0 + 1), e = at(x0 + 1, y0 + 1), o = (y * w + x) * 4;
+      const v = ch => (px[a + ch] * (1 - tx) + px[b + ch] * tx) * (1 - ty) + (px[c + ch] * (1 - tx) + px[e + ch] * tx) * ty;
+      const al = li ? v(3) / 255 : 1;
+      for (let ch = 0; ch < 3; ch++) out[o + ch] = out[o + ch] * (1 - al) + v(ch) * al;
+      out[o + 3] = 255;
+    }
+  });
+  const lv = { w, h, rgba: out };
+  return { w, h, rgba: out, levels: [lv] };
+}
 function textureFor(name, masked) {
   if (!name) return null;
   const k = name.toLowerCase(), mode = $("mip") ? $("mip").value : "auto";
@@ -1147,7 +1170,7 @@ function textureFor(name, masked) {
   if (texCache.has(ck)) return texCache.get(ck);
   if (!texScope && texCache.has(k) && !(archive && archive.has(k))) return texCache.get(k); // built-in example
   let tex = null;
-  const d = ddsFor(k, masked);
+  const d = k.includes("+") ? layered(k.split("+")) : ddsFor(k, masked);
   if (d) {
     const chain = mipChain(d);
     const one = l => new THREE.DataTexture(new Uint8Array(l.rgba.buffer), l.w, l.h, THREE.RGBAFormat);
@@ -1960,15 +1983,23 @@ async function clientArc(name) {
   return files;
 }
 const wldsOf = files => [...files].filter(([k]) => k.endsWith(".wld")).map(([, f]) => f.w || (f.w = readWLD(f.bytes)));
-// One 0x13 track -> frames { q, t } (old WLDs: eight i16 per frame) and ms per frame.
+// One 0x13 track -> frames { q, t, s } (old WLDs: eight i16 per frame) and ms per frame.
+// A frame is rotation w, x, y, z over 16384, shift x, y, z over 256, and the
+// bone's scale over 256, which also scales the bones below it. Read as a shift
+// denominator instead (the usual reading) it gives the same shape for most
+// bones (T(t/256)R S(s) = S(s) T(t/d) R), but not on the end bones, where it
+// is a size: a gnome's R_POINT is 163, so its weapons are drawn at 0.64; the
+// Luclin human seat bone is 6 (vertices stored 40 times too big, which read the
+// other way hang ten units off the hip); Luclin human, barbarian, gnome and
+// Iksar eyes are 244, which seats them in the sockets.
 function decodeTrack(w, t13) {
   const t12 = t13 && wRef(w, t13.o + 4, 0x12); if (!t12 || w.newFmt) return null;
   const n = wU32(w, t12.o + 8), fl = wU32(w, t13.o + 8), sleep = ((fl & 1) && wU32(w, t13.o + 12)) || 100, frames = [];
   for (let i = 0; i < n; i++) {
     const k = t12.o + 12 + i * 16; if (k + 16 > t12.o + t12.size) break;
-    const qw = wI16(w, k), qx = wI16(w, k + 2), qy = wI16(w, k + 4), qz = wI16(w, k + 6), sd = wI16(w, k + 14);
+    const qw = wI16(w, k), qx = wI16(w, k + 2), qy = wI16(w, k + 4), qz = wI16(w, k + 6), sc = wI16(w, k + 14);
     frames.push({ q: (qx || qy || qz || qw) ? new THREE.Quaternion(qx, qy, qz, qw).normalize() : new THREE.Quaternion(),
-      t: sd ? new THREE.Vector3(wI16(w, k + 8) / sd, wI16(w, k + 10) / sd, wI16(w, k + 12) / sd) : new THREE.Vector3() });
+      t: new THREE.Vector3(wI16(w, k + 8) / 256, wI16(w, k + 10) / 256, wI16(w, k + 12) / 256), s: sc > 0 ? sc / 256 : 1 });
   }
   return frames.length ? { frames, sleep } : null;
 }
@@ -1996,6 +2027,9 @@ function dropBody() {
   Object.assign(body, { value: "stick", label: "", model: null, mesh: null, points: {}, anims: new Map(), anim: null, moving: false, links: [], skinned: [] });
   bodyPanel();
 }
+// A Drakkin outfit (dkm_<MM>_00_* parts: loincloth, leather, ...) is the
+// clothing a Hero's Forge chest, legs or robe replaces; hair and tattoos stay.
+const partShown = pt => !!pt.tint || !body.worn.some(x => [1, 5, 7].includes(x.mesh.userData.slot));
 function buildBodyMesh(bodyOnly) {
   const vis = body.mesh ? body.mesh.visible : true;
   if (body.mesh) disposeMesh(body.mesh);
@@ -2004,7 +2038,7 @@ function buildBodyMesh(bodyOnly) {
   body.mesh.userData.model = body.model; body.mesh.visible = vis; root.add(body.mesh);
   for (const pt of body.parts || []) { if (pt.mesh) disposeMesh(pt.mesh);
     texScope = { files: body.files, id: body.arc + "#" + body.mm }; try { pt.mesh = buildMesh(pt.model); } finally { texScope = null; }
-    pt.mesh.userData.model = pt.model; pt.mesh.visible = vis; root.add(pt.mesh);
+    pt.mesh.userData.model = pt.model; pt.mesh.visible = vis && partShown(pt); root.add(pt.mesh);
     if (pt.tint) [].concat(pt.mesh.material).forEach(m => m.color && m.color.set(body.colors[pt.tint])); }
   if (bodyOnly) return;
   for (const x of body.worn) { const old = x.mesh; texScope = { files: x.files, id: x.arc }; try { x.mesh = buildMesh(x.model); } finally { texScope = null; }
@@ -2066,13 +2100,12 @@ async function loadWldBody(value, arc, arcName, code, files) {
   for (const ww of wldsOf(files)) { const aa = ww.frags.find(x => x && x.type === 0x14 && x.name === code + "_ACTORDEF"); if (aa) { w = ww; a = aa; break; } }
   const model = a && wldModel(w, wldActorParts(w, a));
   if (!model || !model.skel || !model.skin) throw new Error(`no ${code} skeleton in ${arcName}`);
-  // A few stock vertices sit metres away (globalhum_chr.s3d: three on
-  // HUMPEBUTTR, a long sliver off the hip), so triangles reaching well past
-  // the body's bulk are left out.
+  // Safety net: a triangle reaching well past the body's bulk is left out.
   const P = model.pos, ax = [0, 1, 2].map(c => { const v = []; for (let i = c; i < P.length; i += 3) v.push(P[i]); return v.sort((x, y) => x - y); });
   const lim = ax.map(v => { const lo = v[Math.floor(v.length * 0.02)], hi = v[Math.floor(v.length * 0.98)], pad = (hi - lo) * 0.5; return [lo - pad, hi + pad]; });
   const inside = i => lim.every(([lo, hi], c) => P[i * 3 + c] >= lo && P[i * 3 + c] <= hi);
-  model.tris = model.tris.filter(t => inside(t[0]) && inside(t[1]) && inside(t[2])); model.nTri = model.tris.length;
+  const kept = model.tris.filter(t => inside(t[0]) && inside(t[1]) && inside(t[2])); if (kept.length < model.tris.length) console.warn(`${code}: ${model.tris.length - kept.length} stray triangles left out`);
+  model.tris = kept; model.nTri = kept.length;
   const box = new THREE.Box3(), v = new THREE.Vector3();
   for (const t of model.tris) for (let k = 0; k < 3; k++) box.expandByPoint(v.fromArray(P, t[k] * 3));
   box.expandByScalar(box.getSize(v).length() * 0.08);              // room for the animation
@@ -2080,8 +2113,8 @@ async function loadWldBody(value, arc, arcName, code, files) {
   const bones = model.skel.bones, boneIdx = new Map();
   const suffix = bones.map(b => b.track && b.track.name.startsWith(code) && b.track.name.endsWith("_TRACK") ? b.track.name.slice(code.length, -6) : "");
   bones.forEach((b, i) => { if (b.name.startsWith(code) && b.name.endsWith("_DAG")) boneIdx.set(b.name.slice(code.length, -4), i); });
-  const rest = bones.map(b => { const d = decodeTrack(w, b.track); return d ? d.frames[0] : { q: new THREE.Quaternion(), t: new THREE.Vector3() }; });
-  const restWorld = worldMatrices(bones, rest.map(r => new THREE.Matrix4().compose(r.t, r.q, new THREE.Vector3(1, 1, 1))));
+  const rest = bones.map(b => { const d = decodeTrack(w, b.track); return d ? d.frames[0] : { q: new THREE.Quaternion(), t: new THREE.Vector3(), s: 1 }; });
+  const restWorld = worldMatrices(bones, rest.map(r => new THREE.Matrix4().compose(r.t, r.q, new THREE.Vector3(r.s, r.s, r.s))));
   // Animation sources: this WLD, its _chr2 sibling, and the race it borrows from.
   const luclin = bones.length > 60, lend = luclin ? BORROW[code] : (code[2] === "F" ? "ELF" : "ELM"), races = [code];
   if (lend && lend !== code) races.push(lend);
@@ -2124,34 +2157,64 @@ async function setBodyTexture(mm) {
   body.amr = +mm >= 17 ? await clientArc(`global${mm}_amr.s3d`) : null;
   applyBodyMats();
 }
-// Body parts under a worn piece whose NewArmorTagData row says Hide Mesh
-// (legs, boots, robes): by slot, the body materials <race><part>NNNN. Only
-// the triangles a piece actually covers are hidden (see coverHidden): hiding
-// the whole part left see-through gaps where pieces are separate pads
-// (froglok legs) or stop short (above the Iksar tail).
-const HIDE_PARTS = { 5: ["LG"], 6: ["FT"], 7: ["LG"] };
+// Body skin under armor. The tag file's Hide Mesh flag (legs, boots, robes)
+// says the client hides body parts there; in practice skin also pokes through
+// chests, shoulders and gauntlets. So with "Hide the body under armor" on,
+// every body triangle (not the head) that sits under a worn piece is left
+// out: from each corner, edge midpoint and the centre, a ray goes out along the
+// skin's normal, and the triangle is hidden only when every one of them meets
+// armor within a short distance. Skin in real gaps -- between froglok leg
+// pads, above the Iksar tail -- has nothing in front of it and stays.
+const WEAPON_POINTS = new Set(["R_POINT", "L_POINT", "SHIELD_POINT"]);
 function coverHidden() {
   body.coverDirty = false;
-  const parts = new Set(body.hideMesh ? body.worn.filter(x => x.hide && x.mesh.visible).flatMap(x => HIDE_PARTS[x.mesh.userData.slot] || []) : []);
   let tris = body.allTris;
-  if (parts.size && body.mesh) {
-    const size = body.box.getSize(new THREE.Vector3()), R = Math.max(size.x, size.y, size.z) * 0.012, R2 = R * R;
-    // Points on the worn pieces as posed: vertices plus edge midpoints and centres.
-    const grid = new Map(), key = (x, y, z) => `${Math.floor(x / R)},${Math.floor(y / R)},${Math.floor(z / R)}`;
-    const addPt = (x, y, z) => { const k = key(x, y, z); let a = grid.get(k); if (!a) grid.set(k, a = []); a.push(x, y, z); };
-    for (const x of body.worn) { if (!x.mesh.visible) continue;
-      const P = x.mesh.geometry.attributes.position.array, I = x.mesh.geometry.index ? x.mesh.geometry.index.array : null;
-      for (let i = 0; i < P.length; i += 3) addPt(P[i], P[i + 1], P[i + 2]);
-      if (I) for (let t = 0; t < I.length; t += 3) { const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
-        addPt((P[a] + P[b] + P[c]) / 3, (P[a + 1] + P[b + 1] + P[c + 1]) / 3, (P[a + 2] + P[b + 2] + P[c + 2]) / 3);
-        for (const [u, v] of [[a, b], [b, c], [c, a]]) addPt((P[u] + P[v]) / 2, (P[u + 1] + P[v + 1]) / 2, (P[u + 2] + P[v + 2]) / 2); } }
-    const B = body.mesh.geometry.attributes.position.array;
-    const covered = v => { const x = B[v * 3], y = B[v * 3 + 1], z = B[v * 3 + 2], cx = Math.floor(x / R), cy = Math.floor(y / R), cz = Math.floor(z / R);
-      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let k = -1; k <= 1; k++) { const a = grid.get(`${cx + i},${cy + j},${cz + k}`); if (!a) continue;
-        for (let q = 0; q < a.length; q += 3) { const dx = a[q] - x, dy = a[q + 1] - y, dz = a[q + 2] - z; if (dx * dx + dy * dy + dz * dz < R2) return true; } }
-      return false; };
-    const partOf = new Map(body.model.mats.map(m => [m.index, (m.name || "").slice(body.code.length, body.code.length + 2).toUpperCase()]));
-    tris = tris.filter(t => !(parts.has(partOf.get(t[3])) && covered(t[0]) && covered(t[1]) && covered(t[2])));
+  const armor = body.hideMesh && body.mesh ? [...new Set([...body.worn.map(x => x.mesh), ...body.skinned.map(x => x.mesh),
+    ...body.links.filter(l => !WEAPON_POINTS.has(l.at)).map(l => l.mesh)])].filter(m => m && m.visible) : [];
+  if (armor.length) {
+    const size = body.box.getSize(new THREE.Vector3()), S = Math.max(size.x, size.y, size.z);
+    const C = S * 0.04, reach = S * 0.08, back = S * 0.01;
+    // Armor triangles as posed (in the body's space), bucketed in a grid.
+    const T = [], grid = new Map(), v = new THREE.Vector3();
+    for (const mesh of armor) {
+      mesh.updateMatrix();
+      const P = mesh.geometry.attributes.position.array, I = mesh.geometry.index ? mesh.geometry.index.array : null, n = I ? I.length : P.length / 3;
+      for (let t = 0; t < n; t += 3) {
+        const base = T.length / 9;
+        for (let k = 0; k < 3; k++) { v.fromArray(P, (I ? I[t + k] : t + k) * 3).applyMatrix4(mesh.matrix); T.push(v.x, v.y, v.z); }
+        const o = base * 9, lo = [0, 1, 2].map(k => Math.floor(Math.min(T[o + k], T[o + 3 + k], T[o + 6 + k]) / C)), hi = [0, 1, 2].map(k => Math.floor(Math.max(T[o + k], T[o + 3 + k], T[o + 6 + k]) / C));
+        for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) {
+          const k = `${x},${y},${z}`; let a = grid.get(k); if (!a) grid.set(k, a = []); a.push(base); }
+      }
+    }
+    // Does the segment from p - back*n to p + reach*n cross an armor triangle?
+    const hits = (px, py, pz, nx, ny, nz) => {
+      const ox = px - nx * back, oy = py - ny * back, oz = pz - nz * back, len = back + reach, seen = new Set();
+      for (let s = 0; s <= len; s += C * 0.5) {
+        const a = grid.get(`${Math.floor((ox + nx * s) / C)},${Math.floor((oy + ny * s) / C)},${Math.floor((oz + nz * s) / C)}`); if (!a) continue;
+        for (const t of a) {
+          if (seen.has(t)) continue; seen.add(t); const o = t * 9;
+          const e1x = T[o + 3] - T[o], e1y = T[o + 4] - T[o + 1], e1z = T[o + 5] - T[o + 2], e2x = T[o + 6] - T[o], e2y = T[o + 7] - T[o + 1], e2z = T[o + 8] - T[o + 2];
+          const hx = ny * e2z - nz * e2y, hy = nz * e2x - nx * e2z, hz = nx * e2y - ny * e2x, det = e1x * hx + e1y * hy + e1z * hz;
+          if (Math.abs(det) < 1e-12) continue;
+          const f = 1 / det, sx = ox - T[o], sy = oy - T[o + 1], sz = oz - T[o + 2], u = f * (sx * hx + sy * hy + sz * hz);
+          if (u < 0 || u > 1) continue;
+          const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x, w = f * (nx * qx + ny * qy + nz * qz);
+          if (w < 0 || u + w > 1) continue;
+          const d = f * (e2x * qx + e2y * qy + e2z * qz); if (d >= 0 && d <= len) return true;
+        }
+      }
+      return false;
+    };
+    const B = body.mesh.geometry.attributes.position.array, N = body.mesh.geometry.attributes.normal.array, cache = new Map();
+    const ray = (vs, ws) => { let px = 0, py = 0, pz = 0, nx = 0, ny = 0, nz = 0;
+      vs.forEach((i, k) => { px += B[i * 3] * ws[k]; py += B[i * 3 + 1] * ws[k]; pz += B[i * 3 + 2] * ws[k]; nx += N[i * 3]; ny += N[i * 3 + 1]; nz += N[i * 3 + 2]; });
+      const l = Math.hypot(nx, ny, nz) || 1; return hits(px, py, pz, nx / l, ny / l, nz / l); };
+    const corner = i => { if (!cache.has(i)) cache.set(i, ray([i], [1])); return cache.get(i); };
+    const hidden = ([a, b, c]) => corner(a) && corner(b) && corner(c) && ray([a, b, c], [1 / 3, 1 / 3, 1 / 3]) &&
+      ray([a, b], [0.5, 0.5]) && ray([b, c], [0.5, 0.5]) && ray([c, a], [0.5, 0.5]);
+    const keep = new Map(body.model.mats.map(mt => [mt.index, /HE\d{4}|EYE|^head|_eye/i.test(mt.name || "")]));
+    tris = tris.filter(t => keep.get(t[3]) || !hidden(t));
   }
   if (tris !== body.model.tris) { body.model.tris = tris; body.model.nTri = tris.length; buildBodyMesh(true); return true; }
   return false;
@@ -2166,9 +2229,14 @@ function applyBodyMats() {
   // The material name says the slot (HUMCH0001_MDF = chest, page 01); its
   // file can be a skin texture (humchsk01.dds on Luclin bodies), so the
   // armor file is built from the name: humch<NN>01.
+  // On Luclin bodies (.dds) the armor page is drawn over the skin page; on
+  // classic ones (.bmp, no alpha) it replaces it. Material 00 has no classic
+  // pages: the body's own textures are the default.
   const swap = (matName, file) => { const m = new RegExp(`^(${lc}[a-z]{2})(\\d\\d)(\\d\\d)_MDF$`, "i").exec(matName || "");
-    if (mm === "00" || !m || m[1].toLowerCase().endsWith("he")) return file;   // the head follows the helm, not the armor
-    for (const ext of ["dds", "bmp"]) { const n = `${m[1].toLowerCase()}${mm}${m[3]}.${ext}`; if (has(n)) return n; }
+    if (!m || m[1].toLowerCase().endsWith("he")) return file;   // the head follows the helm, not the armor
+    const n = `${m[1].toLowerCase()}${mm}${m[3]}`;
+    if (/\.dds$/i.test(file || "") && has(n + ".dds")) return n + ".dds" === (file || "").toLowerCase() ? file : `${file}+${n}.dds`;
+    if (mm !== "00") for (const ext of ["dds", "bmp"]) if (has(`${n}.${ext}`)) return `${n}.${ext}`;
     return file; };
   body.model.mats = body.baseMats.map(b => { const m = JSON.parse(JSON.stringify(b));
     m.props.forEach(p => { if (/^e_TextureDiffuse0$/i.test(p.name)) p.value = swap(m.name, p.value); });
@@ -2192,7 +2260,7 @@ function setBodyAnim(key) {
   poseBody(body.animStart);
 }
 // Pose the body at time `now`, then everything hanging on it.
-const _q = new THREE.Quaternion(), _t = new THREE.Vector3(), _one = new THREE.Vector3(1, 1, 1);
+const _q = new THREE.Quaternion(), _t = new THREE.Vector3(), _s = new THREE.Vector3();
 function poseBody(now) {
   if (!body.model) return;
   const t = now - body.animStart;
@@ -2202,10 +2270,10 @@ function poseBody(now) {
     const k = sampleTrack(keys, t % body.anim.duration); return conjTrs(k.pos, k.quat, k.scale);
   }) : body.bones.map((b, i) => {
     const tr = body.anim && body.anim[i];
-    if (!tr) return new THREE.Matrix4().compose(body.rest[i].t, body.rest[i].q, _one);
+    if (!tr) return new THREE.Matrix4().compose(body.rest[i].t, body.rest[i].q, _s.setScalar(body.rest[i].s));
     const n = tr.frames.length, f = (t / tr.sleep) % n, i0 = Math.floor(f), i1 = (i0 + 1) % n, k = f - i0;
     _q.copy(tr.frames[i0].q).slerp(tr.frames[i1].q, k); _t.copy(tr.frames[i0].t).lerp(tr.frames[i1].t, k);
-    return new THREE.Matrix4().compose(_t, _q, _one);
+    return new THREE.Matrix4().compose(_t, _q, _s.setScalar(tr.frames[i0].s + (tr.frames[i1].s - tr.frames[i0].s) * k));
   });
   const world = body.world = worldMatrices(body.bones, local);
   if (body.mesh && body.kind === "eqg") {
@@ -2349,7 +2417,7 @@ function arrange() {
   if (mode === "off" || real) { if (figureGroup) figureGroup.visible = false; }
   else { if (!figureGroup) { figureGroup = buildFigure(); root.add(figureGroup); } figureGroup.visible = true; }
   if (body.mesh) body.mesh.visible = real;
-  for (const pt of body.parts || []) if (pt.mesh) pt.mesh.visible = real;
+  for (const pt of body.parts || []) if (pt.mesh) pt.mesh.visible = real && partShown(pt);
   for (const x of body.worn) x.mesh.visible = real;
   const all = [current, ...extras.values()].filter(Boolean);
   for (const m of all) { place(m, [0, 0, 0]); restGeometry(m); }
@@ -2405,7 +2473,7 @@ function arrange() {
     if (main) link(main, isShieldLike(main.userData.model) ? shieldAt : "R_POINT");
     if (second) link(second, isShieldLike(second.userData.model) ? shieldAt : "L_POINT");
   }
-  if (real) { poseBody(performance.now()); if (body.coverDirty && coverHidden()) poseBody(performance.now()); }
+  if (real) { poseBody(performance.now()); body.coverDirty = true; if (coverHidden()) poseBody(performance.now()); }
   root.updateMatrixWorld(true);
 }
 function sceneBox() {
@@ -3009,5 +3077,5 @@ let lastFrame = performance.now();
 resize();
 exampleTextures();
 show(exampleModel(), "Example (built in, not an EQ asset)");
-window.__eqgv = { body, applyBodyMats, get controls() { return controls; }, trs, worldMatrices, get adjMap() { return adjMap; }, makeZip, get cmp() { return cmp; }, get camera() { return camera; }, readPTS, readPRT, readEDD, readTGA, loadClientFiles, fx, readPFS, readMOD, readDDS, readBMP, readANI, readWLD, wldActorParts, wldSkeleton, wldMesh, uvFlipScore, mipChain, get skin() { return skin; }, openFiles, textureFor, texErrors, preflight, loadRegistry, get current() { return current; } };
+window.__eqgv = { decodeTrack, body, applyBodyMats, get controls() { return controls; }, trs, worldMatrices, get adjMap() { return adjMap; }, makeZip, get cmp() { return cmp; }, get camera() { return camera; }, readPTS, readPRT, readEDD, readTGA, loadClientFiles, fx, readPFS, readMOD, readDDS, readBMP, readANI, readWLD, wldActorParts, wldSkeleton, wldMesh, uvFlipScore, mipChain, get skin() { return skin; }, openFiles, textureFor, texErrors, preflight, loadRegistry, get current() { return current; } };
 </script>

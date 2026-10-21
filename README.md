@@ -54,7 +54,8 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   shield), or wears Heroes' Forge armor pieces as a set. Choose one of:
   - a stick figure;
   - any race from your client folder: classic races from `global_chr.s3d` in
-    their standing pose, Luclin races from `global<race>_chr.s3d`, Frogloks
+    their standing pose, Luclin races from `global<race>_chr.s3d` in their
+    default clothing (see Armor texture below), Frogloks
     from `globalpcfroglok_chr.s3d`, Drakkin from `dkm.eqg` / `dkf.eqg`, built
     as the game builds them: the base model plus the outfit parts for the armor
     material (`dkm_<MM>_00_*`), hair and tattoos, with hair and tattoo colour
@@ -72,16 +73,23 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
     slashing, `C03` 2H slashing, and so on). Races with no set of their own
     use the one the client shares with them, the way the stock data does.
   - **Armor texture:** None, leather, chain, plate, monk, robes, and Velious
-    materials when `global<NN>_amr.s3d` is in the folder.
+    materials when `global<NN>_amr.s3d` is in the folder. On Luclin bodies
+    an armor page is drawn over the skin page (`humch0201.dds` over
+    `humchsk01.dds`): its alpha says where it covers, and the skin shows
+    where it is clear. Material 00 is the default clothing (a human's vest and
+    trousers, an Iksar's harness), so None is not naked. Classic bodies swap
+    the whole page.
   - **Hero's Forge set:** pick a set number. The pieces for that race are found
     through `NewArmorTagData.txt` and `OnDemandResources.txt`, put on the
     body and follow the animation. An armor piece you have open takes its
     slot in the set, replacing the set's piece, so a custom piece can be
-    checked against the rest of a set. Weapons and shields are held. The tag
-    file's Hide Mesh flag is applied: the body's legs or feet under such a
-    piece are hidden where the piece covers them (a checkbox turns this off),
-    and a helm without Show Hair hides head page 06 (a human's ears, an
-    Iksar's spikes). Luclin females use `LF` rows. Drakkin use the
+    checked against the rest of a set. Weapons and shields are held. Body
+    skin under the armor is hidden so it can't poke through: a body triangle
+    goes when rays out from its corners, edge midpoints and centre all meet
+    a worn piece close by, so skin in real gaps (between froglok leg pads)
+    stays. A checkbox turns this off. A helm without Show Hair hides head
+    page 06 (a human's ears, an Iksar's spikes), and a Hero's Forge chest,
+    legs or robe replaces a Drakkin's outfit parts. Luclin females use `LF` rows. Drakkin use the
     tag file's `N` rows. Pieces hung on a point (helms, bracers,
     gloves) get the race's fit from `NewArmorAdjData.txt` (scale, offset and
     rotation per point) unless their tag row says Ignore Adjustment (-1).
@@ -166,7 +174,13 @@ published meaning.
 - **EDD** is `name[64]`, `texture[32]` and 80 fields per emitter.
 - **WLD** (`.s3d`) uses fragments 0x03/04/05/30/31 (materials), 0x36
   (meshes), 0x2D, 0x10/0x11/0x12/0x13 (skeletons and tracks) and 0x14
-  (actors).
+  (actors). A track frame is eight 16-bit values: rotation w, x, y, z over
+  16384, shift x, y, z over 256, and the bone's scale over 256, which also
+  scales the bones below it. The last value is often read as a shift
+  denominator, which gives the same shape for most bones but not for end
+  bones: Luclin eyes are 244 (read as a scale they sit in their sockets,
+  not in front of them), the human seat bone is 6, and a gnome's `R_POINT`
+  is 163, so its weapons are drawn at 0.64.
 - **Textures:** DDS (DXT1/3/5 and uncompressed, with stored mips), BMP (8, 24
   and 32-bit) and TGA (24/32-bit, raw or RLE).
 
