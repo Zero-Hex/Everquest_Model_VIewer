@@ -35,8 +35,15 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
 - **Item animations:** an item's own `.ani` files play on its skeleton.
 - **Effects:** with your client folder picked, an item's `.prt`/`.pts`
   emitters play from `actoremittersnew.edd` and the `*Effects` sprites.
-- **Figure:** a stand-in body that holds the selected item (and a second one
-  or a shield), or wears Heroes' Forge armor pieces as a set.
+- **Figure:** a body that holds the selected item (and a second one or a
+  shield), or wears Heroes' Forge armor pieces as a set. Choose one of:
+  - a stick figure;
+  - any race from your client folder: classic races from `global_chr.s3d` in
+    their standing pose, Luclin races from `global<race>_chr.s3d`;
+  - a race from an open `*_chr.s3d`.
+
+  On a race body, items go on its `R_POINT`, `L_POINT`, `SHIELD_POINT` and
+  `HEAD_POINT`, as in game.
 - **Find:** open any item by ID through `OnDemandResources.txt`, by archive
   name, or by actor name inside the `.s3d` equipment archives.
 - **Recently opened:** reopen models you looked at before.
