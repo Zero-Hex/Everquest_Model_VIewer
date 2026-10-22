@@ -308,7 +308,7 @@ details.sec.userhide { display: none !important; }
             <button data-export="icon64">Icon PNG, 64 × 64</button>
             <button data-export="icon256">Icon PNG, 256 × 256</button>
             <button data-export="textures">All textures as PNG<span class="sub">one .zip, top level of each texture</span></button>
-            <button data-export="glb">Model as glTF (.glb)<span class="sub">for Blender and other tools; zipped inside claude.ai</span></button>
+            <button data-export="glb">Model as glTF (.glb)<span class="sub" id="glbNote">for Blender and other tools</span></button>
           </div></details>
         <details class="menu" id="secMenu"><summary class="btn" title="Choose which sidebar sections to show">Sections</summary>
           <div class="menupop" id="secPop"></div></details>
@@ -2760,7 +2760,7 @@ function renderFrame() {
 // viewer confirms each save; .glb isn't an allowed type there, so it's zipped);
 // anywhere else, an ordinary download link.
 let downloadsCap = null;
-try { if (window.claude && typeof window.claude.use === "function") window.claude.use("downloads").then(d => { downloadsCap = d; }, () => {}); } catch (e) {}
+try { if (window.claude && typeof window.claude.use === "function") window.claude.use("downloads").then(d => { downloadsCap = d; $("glbNote").textContent += "; saved as a .zip here"; }, () => {}); } catch (e) {}
 const note = (msg, bad) => { $("arcInfo").textContent = msg; $("arcInfo").classList.toggle("err", !!bad); };
 async function saveFile(filename, blob) {
   if (downloadsCap) {
