@@ -694,15 +694,16 @@ function wldMesh(w, f) {
   if (list) { const n = wU32(w, list.o + 8); for (let k = 0; k < n; k++) { const mf = wRef(w, list.o + 12 + k * 4, 0x30); mats.push(mf); } }
   return { name: f.name, nv, pos, uv, nrm, polys, pieces, runs, mats };
 }
-// The older mesh 0x2C (gequip's IT62 sword, IT1036), as quail reads it:
-// counts, palette 0x31 at +36, centre at +44, then float vertices, UVs and
-// normals, colours, 16-byte faces {flags, 4 x u16, v1, v2, v3}, mesh ops,
-// vertex pieces {count, bone}; with 0x200 a u32 list; with 0x800 face
-// material runs {count, material}.
+// The older mesh 0x2C (gequip's IT62 sword, IT1036), after quail: counts,
+// palette 0x31 at +36, then float vertices from +68, UVs and normals,
+// colours, 16-byte faces {flags, 4 x u16, v1, v2, v3}, mesh ops, vertex
+// pieces {count, bone}; with 0x200 a u32 list; with 0x800 face material runs
+// {count, material}. The centre is the three floats at +52 (+64 is a radius):
+// with it IT62's sword matches the 0x36 copy IT2 uses, grip in the hand.
 function wldMesh2C(w, f) {
   const o = f.o, dv = w.dv, u32 = k => dv.getUint32(o + k, true), fl = dv.getUint32(o + 4, true);
   const nv = u32(8), nt = u32(12), nn = u32(16), nc = u32(20), np = u32(24), nOps = dv.getUint16(o + 28, true), nPieces = u32(32);
-  const cx = dv.getFloat32(o + 44, true), cy = dv.getFloat32(o + 48, true), cz = dv.getFloat32(o + 52, true);
+  const cx = dv.getFloat32(o + 52, true), cy = dv.getFloat32(o + 56, true), cz = dv.getFloat32(o + 60, true);
   let p = o + 68;
   const pos = new Float32Array(nv * 3), uv = new Float32Array(nv * 2), nrm = new Float32Array(nv * 3);
   for (let i = 0; i < nv; i++, p += 12) { pos[i * 3] = cx + dv.getFloat32(p, true); pos[i * 3 + 1] = cy + dv.getFloat32(p + 4, true); pos[i * 3 + 2] = cz + dv.getFloat32(p + 8, true); }
@@ -831,7 +832,9 @@ function wldModel(w, parts) {
   }
   const nVert = pos.length / 3;
   const sk = (parts.find(p => p.skel) || {}).skel || null;
-  const clouds = sk ? sk.bones.map((b, i) => b.cloud ? { w, f: b.cloud, bone: i, at: new THREE.Vector3().setFromMatrixPosition(sk.world[i]) } : null).filter(Boolean) : [];
+  const clouds = sk ? sk.bones.map((b, i) => { if (!b.cloud) return null;
+    const at = new THREE.Vector3(), rot = new THREE.Quaternion(); sk.world[i].decompose(at, rot, new THREE.Vector3());
+    return { w, f: b.cloud, bone: i, at, rot }; }).filter(Boolean) : [];
   return { wld: true, wldVer: w.ver, parts: parts.length, skinnedRest: skinned, skel: sk, clouds,
     skin: skinned && parts.every(p => !p.skel || p.skel === parts.find(q => q.skel).skel) ? { vbone: new Int32Array(vbone), vloc: new Float32Array(vloc), nloc: new Float32Array(nloc) } : null, ver: 0, vsize: 0, nBone: 0, bones: [], weights: [],
     mats, pos: new Float32Array(pos), nrm: new Float32Array(nrm), uv: new Float32Array(uv), tris, nVert, nTri: tris.length, sizeOk: true };
@@ -1017,11 +1020,13 @@ const FX_MAX = 400;
 // hung on a bone of the item's skeleton, drawing a sprite (0x26 -> 0x05 ->
 // 0x04 -> bitmaps). Fields, read from gequip.wld: movement (3 = along the
 // spawn normal, 4 = every way), particle count, spawn radius, cone angle,
-// lifetime in ms, speed, spawn normal (z, x, y), rate per second, size,
+// lifetime in ms, speed, spawn normal (x, y, z in the point's own frame:
+// turned by the point's rotation, IT62's flames run from the hilt out and a
+// torch's smoke leaves the flame end, as in game), rate per second, size,
 // colour as ARGB. Turned into the same settings the .eqg emitters use.
 function readCloud(w, f) {
   const o = f.o, i = k => w.dv.getInt32(o + k, true), fl = k => w.dv.getFloat32(o + k, true);
-  const nrm = new THREE.Vector3(fl(64), fl(68), fl(60)), speed = fl(56), life = i(52), col = w.dv.getUint32(o + 80, true);
+  const nrm = new THREE.Vector3(fl(60), fl(64), fl(68)), speed = fl(56), life = i(52), col = w.dv.getUint32(o + 80, true);
   let sprite = "", frames = 1, additive = true;
   const s26 = wRef(w, o + 84, 0x26), s5 = s26 && wRef(w, s26.o + 8, 0x05), s4 = s5 && wRef(w, s5.o + 4, 0x04);
   if (s26) additive = (w.dv.getUint32(s26.o + 12, true) & 0xFF) !== 0x13;
@@ -1062,6 +1067,7 @@ function buildEffects() {
   if (model && model.wld && model.clouds && model.clouds.length) {
     for (const c of model.clouds) {
       const def = readCloud(c.w, c.f), li = document.createElement("li"), bone = model.skel.bones[c.bone].name.replace(/_DAG$/, "");
+      if (c.rot) def.vel = new THREE.Vector3(...def.vel).applyQuaternion(c.rot).toArray();     // into the item's frame
       li.className = "ok"; li.innerHTML = '<span class="sev">On</span><span class="msg"></span>';
       li.lastChild.textContent = `${def.name} (WLD particle cloud) at ${bone} · ${def.sprite || "no sprite"}${def.additive ? " · additive" : ""} · ${def.max} particles, ${+def.fadeout.toFixed(2)} s, ${+def.speed.toFixed(2)}/s, rate ${def.density}/s, size ${+def.particleScale[0].toFixed(2)}`;
       ul.append(li);
