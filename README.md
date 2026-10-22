@@ -131,7 +131,9 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   - the view as PNG;
   - transparent icon PNGs (40, 64 or 256 px);
   - all textures as PNG;
-  - the model as glTF (`.glb`).
+  - the model as glTF (`.glb`);
+  - the model as STL (`.stl`): the shape only, no textures, upright (Z up).
+    GitHub shows `.stl` files in 3D when you open them in a repository.
 - **Pre-flight checks:**
   - materials over 2,400 triangles (the client skips them without an error);
   - stored or dark mip levels;

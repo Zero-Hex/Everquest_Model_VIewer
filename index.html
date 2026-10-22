@@ -309,6 +309,7 @@ details.sec.userhide { display: none !important; }
             <button data-export="icon256">Icon PNG, 256 × 256</button>
             <button data-export="textures">All textures as PNG<span class="sub">one .zip, top level of each texture</span></button>
             <button data-export="glb">Model as glTF (.glb)<span class="sub" id="glbNote">for Blender and other tools</span></button>
+            <button data-export="stl">Model as STL (.stl)<span class="sub" id="stlNote">shape only, no textures; GitHub shows .stl files in 3D</span></button>
           </div></details>
         <details class="menu" id="secMenu"><summary class="btn" title="Choose which sidebar sections to show">Sections</summary>
           <div class="menupop" id="secPop"></div></details>
@@ -2766,12 +2767,12 @@ function renderFrame() {
 // viewer confirms each save; .glb isn't an allowed type there, so it's zipped);
 // anywhere else, an ordinary download link.
 let downloadsCap = null;
-try { if (window.claude && typeof window.claude.use === "function") window.claude.use("downloads").then(d => { downloadsCap = d; $("glbNote").textContent += "; saved as a .zip here"; }, () => {}); } catch (e) {}
+try { if (window.claude && typeof window.claude.use === "function") window.claude.use("downloads").then(d => { downloadsCap = d; $("glbNote").textContent += "; saved as a .zip here"; $("stlNote").textContent += "; saved as a .zip here"; }, () => {}); } catch (e) {}
 const note = (msg, bad) => { $("arcInfo").textContent = msg; $("arcInfo").classList.toggle("err", !!bad); };
 async function saveFile(filename, blob) {
   if (downloadsCap) {
     let name = filename, data = blob;
-    if (/\.glb$/i.test(filename)) { name = filename.replace(/\.glb$/i, ".zip"); data = makeZip([{ name: filename, data: new Uint8Array(await blob.arrayBuffer()) }]); }
+    if (/\.(glb|stl)$/i.test(filename)) { name = filename.replace(/\.(glb|stl)$/i, ".zip"); data = makeZip([{ name: filename, data: new Uint8Array(await blob.arrayBuffer()) }]); }
     try { await downloadsCap.save({ filename: name, data }); note(`Saved ${name}.`); }
     catch (e) { if (!e || e.code !== "declined") note(`Couldn't save ${name}: ${(e && (e.message || e.code)) || e}`, true); }
     return;
@@ -2887,6 +2888,35 @@ async function exportGLB() {
   const glb = await new Promise((res, rej) => { try { new THREE.GLTFExporter().parse(group, res, { binary: true, embedImages: true, onlyVisible: false, maxTextureSize: 4096 }); } catch (e) { rej(e); } });
   await saveFile(`${baseName()}.glb`, new Blob([glb], { type: "model/gltf-binary" }));
 }
+// STL (binary): the shape only -- 80-byte header, triangle count, then per
+// triangle a normal, three corners and 2 spare bytes. The selected model and
+// any added ones as they stand, in EQ's own Z-up frame (STL's usual up), with
+// invisible faces left out.
+function exportSTL() {
+  if (!current) return;
+  const tris = [], a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (const m of [current, ...extras.values()]) {
+    m.updateMatrix(); const g = m.geometry, P = g.attributes.position, I = g.index ? g.index.array : null, mats = [].concat(m.material);
+    const groups = g.groups.length ? g.groups : [{ start: 0, count: I ? I.length : P.count, materialIndex: 0 }];
+    for (const gr of groups) {
+      const mat = mats[gr.materialIndex] || mats[0]; if (mat && mat.visible === false) continue;
+      for (let k = gr.start; k + 2 < gr.start + gr.count; k += 3) {
+        const v = j => (I ? I[k + j] : k + j);
+        tris.push([a.fromBufferAttribute(P, v(0)).applyMatrix4(m.matrix).clone(), b.fromBufferAttribute(P, v(1)).applyMatrix4(m.matrix).clone(), c.fromBufferAttribute(P, v(2)).applyMatrix4(m.matrix).clone()]);
+      }
+    }
+  }
+  const buf = new ArrayBuffer(84 + tris.length * 50), dv = new DataView(buf), head = `EQ Model Viewer: ${baseName()}`;
+  for (let i = 0; i < Math.min(80, head.length); i++) dv.setUint8(i, head.charCodeAt(i) & 0x7F);
+  dv.setUint32(80, tris.length, true);
+  let o = 84; const n = new THREE.Vector3(), e = new THREE.Vector3();
+  for (const [p0, p1, p2] of tris) {
+    n.subVectors(p1, p0).cross(e.subVectors(p2, p0)).normalize();
+    for (const v of [n, p0, p1, p2]) { dv.setFloat32(o, v.x || 0, true); dv.setFloat32(o + 4, v.y || 0, true); dv.setFloat32(o + 8, v.z || 0, true); o += 12; }
+    o += 2;
+  }
+  return saveFile(`${baseName()}.stl`, new Blob([buf], { type: "model/stl" }));
+}
 async function runExport(kind) {
   $("exportMenu").open = false;
   try {
@@ -2894,6 +2924,7 @@ async function runExport(kind) {
     else if (kind.startsWith("icon")) await exportIcon(+kind.slice(4));
     else if (kind === "textures") await exportTextures();
     else if (kind === "glb") await exportGLB();
+    else if (kind === "stl") await exportSTL();
   } catch (e) { note(`Export failed: ${e.message || e}`, true); }
 }
 
