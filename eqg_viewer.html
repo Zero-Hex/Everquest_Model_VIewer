@@ -946,7 +946,7 @@ function readTGA(bytes) {
 // Emitter sprites are spread over the client's *Effects folders: most in
 // ActorEffects and SpellEffects, some only in EnvEmitterEffects (pt_add_smoke,
 // mist_white_full, new_fire...) or RenderEffects. ActorEffects wins a tie.
-const fx = { edd: null, eddName: "", sprites: new Map(), spriteRank: new Map(), folders: new Map(), spriteTex: new Map(), emitters: [], group: null };
+const fx = { edd: null, eddName: "", sprites: new Map(), spriteRank: new Map(), folders: new Map(), spriteTex: new Map(), emitters: [], twins: [], group: null };
 const FX_FOLDER_RANK = { actoreffects: 0, spelleffects: 1, envemittereffects: 2, rendereffects: 3 };
 // Client entries: {path ("EverQuest/ActorEffects/x.dds"), name, get() -> File};
 // from the folder picker, a remembered folder handle, or dropped files.
@@ -1058,11 +1058,20 @@ function makeEmitter(def, pos, triggered, host, space) {
   const points = new THREE.Points(g, mat); points.frustumCulled = false;
   return { def, pos, triggered, host, space: space || root, points, parts: [], carry: 0 };
 }
-function buildEffects() {
+function buildEffects() { buildItemEffects(); twinEffects(); }
+// Both hands: the left-hand copy of the item gets emitters of its own, the
+// same settings hung on the copy, so each weapon trails its own particles.
+function twinEffects() {
+  for (const t of fx.twins) { if (t.points.parent) t.points.parent.remove(t.points); t.points.geometry.dispose(); t.points.material.dispose(); }
+  fx.twins = [];
+  if (!dual || !fx.group || dual.userData.src !== current) return;
+  for (const e of fx.emitters) if (e.host === current) { const t = makeEmitter(e.def, e.pos.clone(), e.triggered, dual); fx.twins.push(t); fx.group.add(t.points); }
+}
+function buildItemEffects() {
   if (fx.group) { if (fx.group.parent) fx.group.parent.remove(fx.group); fx.group.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); }
   // Particles live in world space (they trail a moving item), so the group
   // hangs off the scene root, not off the item.
-  fx.group = new THREE.Group(); fx.emitters = []; root.add(fx.group);
+  fx.group = new THREE.Group(); fx.emitters = []; fx.twins = []; root.add(fx.group);
   const ul = $("fxList"); ul.innerHTML = "";
   const model = current && current.userData.model;
   if (model && model.wld && model.clouds && model.clouds.length) {
@@ -1113,7 +1122,7 @@ function buildEffects() {
   }
 }
 const rnd = (a, b) => a + Math.random() * (b - a);
-const allEmitters = () => cmp && cmp.emitters ? fx.emitters.concat(cmp.emitters) : fx.emitters;
+const allEmitters = () => fx.emitters.concat(fx.twins, cmp && cmp.emitters ? cmp.emitters : []);
 function updateEffects(dt) {
   const list = allEmitters();
   if (!list.length) return;
@@ -2573,10 +2582,10 @@ function restGeometry(m) { const g = m.geometry, md = m.userData.model; if (md &
 // item in the left hand too (the copy shares its geometry and materials).
 let dual = null;
 function dualOf(m) {
-  if (!dual || dual.userData.src !== m) { dropDual(); dual = m.clone(); dual.userData = Object.assign({}, m.userData, { src: m }); root.add(dual); }
+  if (!dual || dual.userData.src !== m) { dropDual(); dual = m.clone(); dual.userData = Object.assign({}, m.userData, { src: m }); root.add(dual); twinEffects(); }
   return dual;
 }
-function dropDual() { if (dual) { root.remove(dual); dual = null; } }
+function dropDual() { if (dual) { root.remove(dual); dual = null; twinEffects(); } }
 function arrange() {
   let mode = $("figure").value; const real = mode !== "off" && !!body.mesh, hand = $("hand").value;
   let usedDual = false;

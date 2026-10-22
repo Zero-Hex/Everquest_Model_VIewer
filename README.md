@@ -70,8 +70,8 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   `HEAD_POINT` (on Drakkin, the `ARMR_WEAP`, `ARML_WEAP`, `ARML_SHLD` and
   `HEAD_HEAD` bones), as in game. **Hand** picks where the selected weapon
   goes: Primary (right hand, an added item in the left), Secondary (left
-  hand) or Both (the same weapon in each hand); shields stay on the shield
-  arm. A point's scale applies to what hangs on it, so a gnome's weapons are
+  hand) or Both (the same weapon in each hand, each with its own particle
+  effects); shields stay on the shield arm. A point's scale applies to what hangs on it, so a gnome's weapons are
   drawn smaller and an ogre's larger. The last body, set, armor texture,
   animation and hand are remembered in the browser and come back when the
   figure is turned on.
