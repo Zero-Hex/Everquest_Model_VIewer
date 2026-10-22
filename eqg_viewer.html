@@ -103,6 +103,9 @@ dd { margin: 0; font: 13px var(--mono); font-variant-numeric: tabular-nums; min-
 .checks .msg { min-width: 0; overflow-wrap: anywhere; }
 .btn.small, button.small { font-size: 13px; padding: 5px 10px; }
 .ccrow { display: flex; gap: 6px; margin: 6px 0; }
+.holdsl { display: grid; grid-template-columns: 78px 1fr 64px; gap: 6px; align-items: center; font-size: 12px; margin: 2px 0; }
+.holdsl input { width: 100%; min-width: 0; font: inherit; }
+.holdline { white-space: pre-wrap; word-break: break-all; font-size: 11px; margin: 6px 0; padding: 6px; border-radius: 6px; background: color-mix(in srgb, currentColor 8%, transparent); }
 .cliprow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
 .cliprow input[type=number] { width: 4.5em; }
 label.field { display: grid; grid-template-columns: 1fr; gap: 3px; margin: 8px 0; font-size: 13px; color: var(--muted); }
@@ -225,6 +228,20 @@ details.sec.userhide { display: none !important; }
         <div id="bodyColors" hidden><label class="toggle" for="hairColor">Hair colour <input type="color" id="hairColor"></label>
           <label class="toggle" for="tattooColor">Tattoo colour <input type="color" id="tattooColor"></label></div>
         <p class="hint" id="bodySetInfo">Hero's Forge sets come from Resources/NewArmorTagData.txt; each piece is found through OnDemandResources.txt. Pieces show on Luclin bodies in game.</p>
+      </details>
+      <details class="sec" open data-sec="hold" id="holdSec">
+        <summary class="label">Hold / offsets</summary>
+        <p class="hint" id="holdInfo">Open a custom .eqg item to adjust where it's held.</p>
+        <div id="holdCtl" hidden>
+          <div id="holdSliders"></div>
+          <div class="ccrow"><button class="small" id="holdSpin" title="Turn it 180° about its length (edge or axe head to the other side)">Spin 180°</button>
+            <button class="small" id="holdReset" title="Back to the model as it is in the archive">Reset</button></div>
+          <p class="hint" id="holdDims"></p>
+          <label class="field" for="holdId">Save as ID <input id="holdId" spellcheck="false" autocomplete="off"></label>
+          <p class="hint" id="holdIdInfo"></p>
+          <div class="ccrow"><button class="primary" id="holdSave">Save a copy (.eqg)</button><button class="small" id="holdOpen" hidden title="Open the copy you just saved, with the offsets baked in">Open the copy</button></div>
+          <pre class="holdline" id="holdLine" hidden></pre>
+        </div>
       </details>
       <details class="sec" data-sec="clip" id="clipSec">
         <summary class="label">Record a clip</summary>
@@ -447,7 +464,7 @@ function readMOD(bytes) {
     for (let k = 0; k < 3; k++) { pos[v * 3 + k] = dv.getFloat32(o + k * 4, true); nrm[v * 3 + k] = dv.getFloat32(o + 12 + k * 4, true); }
     uv[v * 2] = dv.getFloat32(o + uvOff, true); uv[v * 2 + 1] = dv.getFloat32(o + uvOff + 4, true);
   }
-  p += nVert * vsize;
+  const vstart = p; p += nVert * vsize;
   const tris = [];
   for (let t = 0; t < nTri; t++) {
     const o = p + t * 20;
@@ -473,7 +490,7 @@ function readMOD(bytes) {
       weights.push(list);
     }
   }
-  return { ver, mats, pos, nrm, uv, tris, nVert, nTri, nBone, vsize, bones, weights, sizeOk: expected === bytes.byteLength };
+  return { ver, mats, pos, nrm, uv, tris, nVert, nTri, nBone, vsize, vstart, bones, weights, sizeOk: expected === bytes.byteLength };
 }
 
 // EQGA animation (.ani): "EQGA", version, string-table length, bone count,
@@ -1649,7 +1666,7 @@ function openModel(key, keepView) {
   document.querySelectorAll("#models button").forEach(b => b.setAttribute("aria-current", b.dataset.key === key ? "true" : "false"));
   const label = we ? we.label : f.name.replace(/\.mod$/i, "").toUpperCase();
   currentName = nameKey(label); $("nameRow").hidden = false; $("friendlyName").value = friendly[currentName] || "";
-  try { show(we ? we.build() : readMOD(f.bytes), `${archiveName} › ${withName(label)}`, keepView); listAnimations(key); buildEffects(); syncExtraButtons(); $("arcInfo").classList.remove("err");
+  try { show(we ? we.build() : readMOD(f.bytes), `${archiveName} › ${withName(label)}`, keepView); listAnimations(key); buildEffects(); syncExtraButtons(); holdRefresh(); $("arcInfo").classList.remove("err");
         addRecent({ arc: archiveName, key: we ? null : key, label: we ? we.label : f.name.replace(/\.mod$/i, "").toUpperCase() }); }
   catch (e) { $("arcInfo").textContent = `${label}: ${e.message}`; $("arcInfo").classList.add("err"); }
 }
@@ -2589,8 +2606,14 @@ async function bodyPanel() {
   $("bodyColors").hidden = !(body.parts || []).some(p => p.tint); $("hairColor").value = body.colors.hair; $("tattooColor").value = body.colors.tattoo;
 }
 // The item's own frame is the point's frame, as in game: no extra turn.
-function attach(mesh, m) { m.decompose(mesh.position, mesh.quaternion, mesh.scale); mesh.updateMatrixWorld(true); }
-function place(mesh, pos, rotY) { mesh.position.set(...pos); mesh.rotation.set(0, rotY || 0, 0); mesh.scale.set(1, 1, 1); mesh.updateMatrixWorld(true); }
+// A model's hold offset (Hold / offsets, or the converter) is a matrix in the
+// model's own space, multiplied in wherever it is seated; Both's left-hand copy
+// uses its source's.
+const holdOf = mesh => mesh && mesh.userData && (mesh.userData.hold || (mesh.userData.src && mesh.userData.src.userData && mesh.userData.src.userData.hold)) || null;
+function attach(mesh, m) { const h = holdOf(mesh); (h ? m.clone().multiply(h) : m).decompose(mesh.position, mesh.quaternion, mesh.scale); mesh.updateMatrixWorld(true); }
+function place(mesh, pos, rotY) { mesh.position.set(...pos); mesh.rotation.set(0, rotY || 0, 0); mesh.scale.set(1, 1, 1);
+  const h = holdOf(mesh); if (h) { mesh.updateMatrix(); mesh.matrix.clone().multiply(h).decompose(mesh.position, mesh.quaternion, mesh.scale); }
+  mesh.updateMatrixWorld(true); }
 function restGeometry(m) { const g = m.geometry, md = m.userData.model; if (md && md.nBone && !(skin && skin.mesh === m)) { g.attributes.position.array.set(md.pos); g.attributes.normal.array.set(md.nrm); g.attributes.position.needsUpdate = g.attributes.normal.needsUpdate = true; } }
 // Hand: Primary puts the selected item in the right hand and an added one in
 // the left; Secondary the other way round; Both puts a copy of the selected
@@ -2790,7 +2813,7 @@ const note = (msg, bad) => { $("arcInfo").textContent = msg; $("arcInfo").classL
 async function saveFile(filename, blob) {
   if (downloadsCap) {
     let name = filename, data = blob;
-    if (/\.(glb|stl)$/i.test(filename)) { name = filename.replace(/\.(glb|stl)$/i, ".zip"); data = makeZip([{ name: filename, data: new Uint8Array(await blob.arrayBuffer()) }]); }
+    if (/\.(glb|stl|eqg)$/i.test(filename)) { name = filename.replace(/\.(glb|stl|eqg)$/i, ".zip"); data = makeZip([{ name: filename, data: new Uint8Array(await blob.arrayBuffer()) }]); }
     try { await downloadsCap.save({ filename: name, data }); note(`Saved ${name}.`); }
     catch (e) { if (!e || e.code !== "declined") note(`Couldn't save ${name}: ${(e && (e.message || e.code)) || e}`, true); }
     return;
@@ -2935,6 +2958,164 @@ function exportSTL() {
   }
   return saveFile(`${baseName()}.stl`, new Blob([buf], { type: "model/stl" }));
 }
+// Hold / offsets: move a static .eqg model about the hand (slide, spin, tilt,
+// size) and watch it on the figure; Save a copy patches only the vertex
+// positions and normals of its .mod (and its .pts effect points) and writes a
+// new archive as a download, so nothing is ever saved over. Same ID: the whole
+// archive, named <name>-edited.eqg, to swap in for the original. New ID: just
+// this model, its effect files and the textures it uses, as <id>.eqg, plus the
+// registry line to add. Old .s3d items and skinned models aren't edited.
+const HOLD_SLIDERS = [
+  ["x", "Slide along", -2, 2, 0.01, "Moves it along its length through the hand (+ = toward the tip)"],
+  ["z", "Up / down", -1, 1, 0.01, "Moves it across, toward the edge (-) or the back (+)"],
+  ["y", "In / out", -1, 1, 0.01, "Moves it out of or into the palm"],
+  ["rx", "Spin", -180, 180, 1, "Turns it about its length"],
+  ["rz", "Swing", -90, 90, 1, "Tilts the tip up or down"],
+  ["ry", "Lean", -90, 90, 1, "Tilts the tip in or out"],
+  ["scale", "Size %", 25, 300, 1, "Scales it about the hand"],
+];
+const holdZero = () => ({ x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, scale: 1 });
+const holdState = { adj: holdZero(), saved: null, raf: 0 };
+for (const [k, label, min, max, step, tip] of HOLD_SLIDERS) {
+  const row = document.createElement("label"); row.className = "holdsl"; row.title = tip; const v = k === "scale" ? 100 : 0;
+  row.innerHTML = `<span>${label}</span><input type="range" min="${min}" max="${max}" step="${step}" value="${v}" data-k="${k}"><input type="number" min="${min}" max="${max}" step="${step}" value="${v}" data-k="${k}">`;
+  $("holdSliders").append(row);
+}
+function holdMatrix(a) {
+  const r = d => d * Math.PI / 180, m = new THREE.Matrix4().makeTranslation(a.x, a.y, a.z);
+  m.multiply(new THREE.Matrix4().makeRotationZ(r(a.rz))).multiply(new THREE.Matrix4().makeRotationY(r(a.ry))).multiply(new THREE.Matrix4().makeRotationX(r(a.rx)));
+  return m.multiply(new THREE.Matrix4().makeScale(a.scale, a.scale, a.scale));
+}
+const holdIsZero = a => !a.x && !a.y && !a.z && !a.rx && !a.ry && !a.rz && a.scale === 1;
+function holdEditable() {
+  const md = current && current.userData.model;
+  if (!md || md.example || !archive || !/\.eqg$/i.test(archiveName) || !/\.mod$/i.test(currentKey)) return { ok: false, why: md && md.wld ? "Old .s3d items can't be edited here; open a custom .eqg." : "Open a custom .eqg item to adjust where it's held." };
+  if (md.nBone) return { ok: false, why: `${currentKey.toUpperCase()} is skinned (${md.nBone} bones), so its offsets can't be edited here.` };
+  if (md.vstart === undefined || !md.sizeOk) return { ok: false, why: `${currentKey.toUpperCase()}: the model's layout isn't one this editor can patch safely.` };
+  return { ok: true, md };
+}
+function holdRefresh() {
+  const e = holdEditable(); holdState.adj = holdZero(); holdState.saved = null;
+  $("holdCtl").hidden = !e.ok; $("holdInfo").textContent = e.ok ? `Moves ${currentKey.replace(/\.mod$/i, "").toUpperCase()} about the hand. Pick a body under Figure to see it held; the hand holds at the origin.` : e.why;
+  $("holdOpen").hidden = true; $("holdLine").hidden = true;
+  if (e.ok) { $("holdId").value = currentKey.replace(/\.mod$/i, "").toUpperCase(); holdIdCheck(); }
+  holdSync();
+}
+function holdSync() {
+  for (const inp of $("holdSliders").querySelectorAll("input")) { const k = inp.dataset.k; inp.value = k === "scale" ? Math.round(holdState.adj.scale * 100) : holdState.adj[k]; }
+  const md = current && current.userData.model;
+  if (md && md.pos && md.nVert) { let lo = Infinity, hi = -Infinity; for (let i = 0; i < md.nVert; i++) { const x = md.pos[i * 3]; if (x < lo) lo = x; if (x > hi) hi = x; }
+    const a = holdState.adj; $("holdDims").textContent = `Length ${((hi - lo) * a.scale).toFixed(2)} (stock: 1H 2-3.5, 2H 4-5.5)` + (holdIsZero(a) ? "" : " · not saved yet"); }
+}
+function holdApply() {
+  if (!current) return;
+  if (!current.userData.hold) current.userData.hold = new THREE.Matrix4();
+  current.userData.hold.copy(holdMatrix(holdState.adj)); holdSync();
+  if (!holdState.raf) holdState.raf = requestAnimationFrame(() => { holdState.raf = 0; arrange(); });
+}
+$("holdSliders").addEventListener("input", e => { const k = e.target.dataset.k, v = parseFloat(e.target.value); if (!k || !isFinite(v)) return;
+  holdState.adj[k] = k === "scale" ? v / 100 : v; holdApply(); });
+$("holdSpin").addEventListener("click", () => { holdState.adj.rx = ((holdState.adj.rx + 360) % 360) - 180; holdApply(); });
+$("holdReset").addEventListener("click", () => { holdState.adj = holdZero(); holdApply(); });
+// IDs the client already uses (registry, archive names, this archive): the client
+// matches model names by prefix, so a new ID must not equal or prefix one of them.
+function holdKnownIds() {
+  const ids = new Set(), add = s => { const m = /^it\d+/i.exec(s || ""); if (m) ids.add(m[0].toUpperCase()); };
+  if (registry) for (const r of registry.rows) add(r.file);
+  for (const k of client.archives.keys()) add(k);
+  if (archive) for (const k of archive.keys()) add(k);
+  return ids;
+}
+function holdIdCheck() {
+  const id = $("holdId").value.trim().toUpperCase(), old = currentKey.replace(/\.mod$/i, "").toUpperCase(), base = archiveName.replace(/\.eqg$/i, "");
+  let msg = "", bad = false;
+  if (!/^[A-Z0-9_]+$/.test(id)) { msg = "IDs are letters and digits, e.g. IT62150."; bad = true; }
+  else if (id === old) msg = `Same ID: saves ${base}-edited.eqg, the whole archive with this model moved. To use it, back up ${archiveName} in your client and put this copy in its place under that name.`;
+  else {
+    const clash = [...holdKnownIds()].filter(o => o === id || o.startsWith(id));
+    if (clash.length) { msg = `${id} clashes with ${clash.slice(0, 4).join(", ")} (the client matches model names by prefix).`; bad = true; }
+    else msg = `New ID: saves ${id.toLowerCase()}.eqg with just this model, its effect files and its textures, plus the registry line to add.` +
+      (registry || client.archives.size ? "" : " Pick your client folder or load OnDemandResources.txt to check the ID is free.");
+  }
+  $("holdIdInfo").textContent = msg; $("holdIdInfo").classList.toggle("err", bad); $("holdSave").disabled = bad; return !bad;
+}
+$("holdId").addEventListener("input", holdIdCheck);
+// EQ archive name CRC (as the client checks it): CRC-32 poly 0x04C11DB7, MSB first, over the lowercase name + NUL.
+const EQ_CRC_T = (() => { const t = new Uint32Array(256); for (let i = 0; i < 256; i++) { let c = i << 24; for (let k = 0; k < 8; k++) c = c & 0x80000000 ? (c << 1) ^ 0x04C11DB7 : c << 1; t[i] = c >>> 0; } return t; })();
+const eqNameCrc = name => { let c = 0; const s = name.toLowerCase() + "\0"; for (let i = 0; i < s.length; i++) c = ((c << 8) ^ EQ_CRC_T[((c >>> 24) ^ s.charCodeAt(i)) & 255]) >>> 0; return c; };
+// PFS writer, the same layout as the toolkit's (8 KB zlib blocks, directory sorted by CRC, name table, "STEVE").
+function writePFS(files) {
+  const parts = [], ents = []; let off = 12;
+  const blocks = data => { const out = []; for (let i = 0; i < Math.max(data.length, 1); i += 8192) { const chunk = data.subarray(i, i + 8192), z = pako.deflate(chunk), h = new DataView(new ArrayBuffer(8));
+    h.setUint32(0, z.length, true); h.setUint32(4, chunk.length, true); out.push(new Uint8Array(h.buffer), z); } return out; };
+  const push = (crc, data) => { const bl = blocks(data); ents.push([crc, off, data.length]); for (const b of bl) { parts.push(b); off += b.length; } };
+  for (const f of files) push(eqNameCrc(f.name), f.bytes);
+  const enc = f => { const b = new Uint8Array(f.name.length + 1); for (let i = 0; i < f.name.length; i++) b[i] = f.name.charCodeAt(i) & 255; return b; };
+  const names = files.map(enc), nlen = 4 + names.reduce((s, b) => s + 4 + b.length, 0), nd = new Uint8Array(nlen), ndv = new DataView(nd.buffer);
+  ndv.setUint32(0, files.length, true); let q = 4; for (const b of names) { ndv.setUint32(q, b.length, true); nd.set(b, q + 4); q += 4 + b.length; }
+  push(0x61580AC9, nd);
+  ents.sort((a, b) => a[0] - b[0]);
+  const dir = new DataView(new ArrayBuffer(4 + ents.length * 12)); dir.setUint32(0, ents.length, true);
+  ents.forEach(([c, o, n], i) => { dir.setUint32(4 + i * 12, c, true); dir.setUint32(8 + i * 12, o, true); dir.setUint32(12 + i * 12, n, true); });
+  const head = new DataView(new ArrayBuffer(12)); head.setUint32(0, off, true); head.setUint32(4, 0x20534650, true); head.setUint32(8, 0x20000, true);
+  const tail = new Uint8Array([0x53, 0x54, 0x45, 0x56, 0x45, 0, 0, 0, 0]);
+  return new Blob([head.buffer, ...parts, dir.buffer, tail]);
+}
+function holdPatched() {
+  const md = current.userData.model, key = currentKey.toLowerCase(), id = key.replace(/\.mod$/, "");
+  const M = holdMatrix(holdState.adj), N = new THREE.Matrix3().setFromMatrix4(M), s = holdState.adj.scale, v = new THREE.Vector3();
+  const mod = archive.get(key).bytes.slice(), dv = new DataView(mod.buffer);
+  for (let i = 0; i < md.nVert; i++) {
+    const o = md.vstart + i * md.vsize;
+    v.set(dv.getFloat32(o, true), dv.getFloat32(o + 4, true), dv.getFloat32(o + 8, true)).applyMatrix4(M);
+    dv.setFloat32(o, v.x, true); dv.setFloat32(o + 4, v.y, true); dv.setFloat32(o + 8, v.z, true);
+    v.set(dv.getFloat32(o + 12, true), dv.getFloat32(o + 16, true), dv.getFloat32(o + 20, true)).applyMatrix3(N).divideScalar(s);
+    dv.setFloat32(o + 12, v.x, true); dv.setFloat32(o + 16, v.y, true); dv.setFloat32(o + 20, v.z, true);
+  }
+  const out = new Map([[key, mod]]);
+  const pts = archive.get(id + ".pts");
+  if (pts) {   // effect points on the model's origin move with it; points on bones (none on static models) stay
+    const b = pts.bytes.slice(), pv = new DataView(b.buffer), n = pv.getUint32(4, true);
+    for (let i = 0, o = 12; i < n && o + 164 <= b.length; i++, o += 164) {
+      if (!/^(ATTACH_TO_ORIGIN)?$/i.test(cstr(b, o + 64, 64))) continue;
+      v.set(pv.getFloat32(o + 128, true), pv.getFloat32(o + 132, true), pv.getFloat32(o + 136, true)).applyMatrix4(M);
+      pv.setFloat32(o + 128, v.x, true); pv.setFloat32(o + 132, v.y, true); pv.setFloat32(o + 136, v.z, true);
+    }
+    out.set(id + ".pts", b);
+  }
+  return out;
+}
+async function holdSave() {
+  if (!holdEditable().ok || !holdIdCheck()) return;
+  const key = currentKey.toLowerCase(), old = key.replace(/\.mod$/, ""), id = $("holdId").value.trim().toLowerCase(), patched = holdPatched();
+  let files, name, line = "";
+  if (id === old) {
+    files = [...archive.values()].map(f => ({ name: f.name, bytes: patched.get(f.name.toLowerCase()) || f.bytes }));
+    name = archiveName.replace(/\.eqg$/i, "") + "-edited.eqg";
+  } else {
+    const md = current.userData.model, want = new Set();
+    for (const m of md.mats) for (const p of m.props) if (p.type === 2) want.add(String(p.value).toLowerCase());
+    const stems = [...want].map(w => w.replace(/(_c)?\.dds$/, ""));
+    files = [];
+    for (const [k, f] of archive) {
+      const ext = k.slice(old.length);
+      if (k === key || k === old + ".pts" || k === old + ".prt") files.push({ name: id + ext, bytes: patched.get(k) || f.bytes });
+      else if (want.has(k) || stems.some(st => k === st + ".txt" || new RegExp("^" + st.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\d{2,}\\.dds$").test(k))) files.push({ name: f.name, bytes: f.bytes });
+    }
+    name = id + ".eqg"; line = `${name}^${id.toUpperCase()}.MOD^${id.toUpperCase()}_ACTORDEF^EQGM`;
+  }
+  const blob = writePFS(files), bytes = new Uint8Array(await blob.arrayBuffer());
+  readPFS(bytes.slice().buffer);   // throws if the archive didn't come out readable
+  holdState.saved = { name, bytes, key: id + ".mod" };
+  await saveFile(name, new Blob([bytes]));
+  $("holdOpen").hidden = false;
+  $("holdLine").hidden = false;
+  $("holdLine").textContent = line ? `Add to Resources/OnDemandResources.txt:\n${line}\nThen copy ${name} into the EverQuest folder, restart the client, and set the item's Model to ${id.toUpperCase()}.`
+    : `Back up ${archiveName} in your EverQuest folder, put ${name} there as ${archiveName}, and restart the client.`;
+}
+$("holdSave").addEventListener("click", () => holdSave().catch(e => { $("holdIdInfo").textContent = "Save failed: " + e.message; $("holdIdInfo").classList.add("err"); }));
+$("holdOpen").addEventListener("click", async () => { const s = holdState.saved; if (s) await openArchiveFile(new File([s.bytes], s.name), s.key); });
+
 // Video clip: each frame of the 3D view is copied (centre-cropped to the chosen
 // shape) onto a canvas that MediaRecorder encodes. MP4 (H.264) where the browser
 // can, which plays everywhere Discord does; WebM otherwise. Turntable = one full

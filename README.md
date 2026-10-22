@@ -141,6 +141,20 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
     length to whole animation cycles. A 6-second clip is about 1-2 MB, so it
     posts to Discord and plays inline like a GIF. Zoom in first: the clip is
     the middle of the view.
+- **Hold / offsets** (custom `.eqg` items): slide the item through the hand,
+  move it up/down or in/out, spin, swing, lean or resize it, and watch it on the
+  figure as you go (Primary, Secondary or Both). **Save a copy** writes a new
+  file as a download, never over the original:
+  - same ID: `<name>-edited.eqg`, the whole archive with only this model's
+    vertex positions and normals (and its effect points) changed; back up the
+    original in your client and put the copy in its place under the original
+    name;
+  - new ID: `<id>.eqg` with just this model, its effect files and the textures
+    it uses, plus the `OnDemandResources.txt` line to add. IDs that clash with
+    one in your client (the client matches by prefix) are refused.
+
+  **Open the copy** loads what you saved. Old `.s3d` items and skinned models
+  aren't edited.
 - **Pre-flight checks:**
   - materials over 2,400 triangles (the client skips them without an error);
   - stored or dark mip levels;
