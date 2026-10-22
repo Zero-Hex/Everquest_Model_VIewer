@@ -133,7 +133,14 @@ folder…** to pick your EverQuest folder (the one with `eqgame.exe`) and use
   - all textures as PNG;
   - the model as glTF (`.glb`);
   - the model as STL (`.stl`): the shape only, no textures, upright (Z up).
-    GitHub shows `.stl` files in 3D when you open them in a repository.
+    GitHub shows `.stl` files in 3D when you open them in a repository;
+  - a video clip (**Record a clip**): a few seconds of the view as `.mp4`
+    (H.264, where the browser has it: Chrome and Edge do) or `.webm`, as a
+    turntable (one full turn, so it loops) or with the camera as you move it.
+    Square, wide or tall at 480, 720 or 1080. **Match animation** sets the
+    length to whole animation cycles. A 6-second clip is about 1-2 MB, so it
+    posts to Discord and plays inline like a GIF. Zoom in first: the clip is
+    the middle of the view.
 - **Pre-flight checks:**
   - materials over 2,400 triangles (the client skips them without an error);
   - stored or dark mip levels;

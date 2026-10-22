@@ -108,6 +108,8 @@ dd { margin: 0; font: 13px var(--mono); font-variant-numeric: tabular-nums; min-
 .checks .msg { min-width: 0; overflow-wrap: anywhere; }
 .btn.small, button.small { font-size: 13px; padding: 5px 10px; }
 .ccrow { display: flex; gap: 6px; margin: 6px 0; }
+.cliprow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.cliprow input[type=number] { width: 4.5em; }
 label.field { display: grid; grid-template-columns: 1fr; gap: 3px; margin: 8px 0; font-size: 13px; color: var(--muted); }
 label.field select { width: 100%; min-width: 0; }
 .ccrow input { flex: 1 1 auto; min-width: 0; font: 500 13px var(--body); color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
@@ -230,6 +232,18 @@ details.sec.userhide { display: none !important; }
           <label class="toggle" for="tattooColor">Tattoo colour <input type="color" id="tattooColor"></label></div>
         <p class="hint" id="bodySetInfo">Hero's Forge sets come from Resources/NewArmorTagData.txt; each piece is found through OnDemandResources.txt. Pieces show on Luclin bodies in game.</p>
       </details>
+      <details class="sec" data-sec="clip" id="clipSec">
+        <summary class="label">Record a clip</summary>
+        <p class="hint">Records the 3D view as a short video. Discord and most chats play .mp4 and .webm inline like a GIF, at a fraction of a GIF's size.</p>
+        <div class="cliprow"><label for="clipSecs">Length <input type="number" id="clipSecs" min="1" max="60" step="0.5" value="6"> s</label>
+          <button class="small" id="clipMatch" hidden title="Set the length to whole animation cycles (at least 4 s) so the clip loops cleanly">Match animation</button></div>
+        <label class="field" for="clipCam">Camera <select id="clipCam">
+          <option value="turn">Turntable: one full turn</option><option value="free">As it is (you can drag while it records)</option></select></label>
+        <div class="cliprow"><label for="clipShape">Shape <select id="clipShape"><option value="square">Square</option><option value="wide">Wide 16:9</option><option value="tall">Tall 9:16</option></select></label>
+          <label for="clipSize">Size <select id="clipSize"><option value="480">480</option><option value="720" selected>720</option><option value="1080">1080</option></select></label></div>
+        <label class="field" for="clipQ">Quality <select id="clipQ"><option value="1200000">Small (about 1.2 Mbit/s)</option><option value="2500000" selected>Good (about 2.5 Mbit/s)</option><option value="6000000">Best (about 6 Mbit/s)</option></select></label>
+        <div class="ccrow"><button class="primary" id="clipGo">Record</button><span class="hint" id="clipInfo"></span></div>
+      </details>
       <details class="sec" data-sec="client-checks" id="ccSec" hidden>
         <summary class="label">Client checks</summary>
         <p class="hint">Scans the picked client folder: registry lines, archive contents and armor tags. Stock clients have thousands of leftovers, so filter to your own IDs.</p>
@@ -309,6 +323,7 @@ details.sec.userhide { display: none !important; }
             <button data-export="icon256">Icon PNG, 256 × 256</button>
             <button data-export="textures">All textures as PNG<span class="sub">one .zip, top level of each texture</span></button>
             <button data-export="glb">Model as glTF (.glb)<span class="sub" id="glbNote">for Blender and other tools</span></button>
+            <button data-export="clip">Video clip (.mp4)<span class="sub">a few seconds of the view, small enough for Discord</span></button>
             <button data-export="stl">Model as STL (.stl)<span class="sub" id="stlNote">shape only, no textures; GitHub shows .stl files in 3D</span></button>
           </div></details>
         <details class="menu" id="secMenu"><summary class="btn" title="Choose which sidebar sections to show">Sections</summary>
@@ -2926,8 +2941,88 @@ function exportSTL() {
   }
   return saveFile(`${baseName()}.stl`, new Blob([buf], { type: "model/stl" }));
 }
+// Video clip: each frame of the 3D view is copied (centre-cropped to the chosen
+// shape) onto a canvas that MediaRecorder encodes. MP4 (H.264) where the browser
+// can, which plays everywhere Discord does; WebM otherwise. Turntable = one full
+// turn about the view's vertical axis over the clip, so it loops cleanly.
+const clip = { rec: null };
+function clipMime() {
+  if (!window.MediaRecorder) return null;
+  // H.264 .mp4 only: a browser without an H.264 encoder puts VP9 in an .mp4 that some players (Discord on iOS) refuse,
+  // so it records a plain .webm instead.
+  for (const t of ["video/mp4;codecs=avc1.640028", "video/mp4;codecs=avc1.42E01E", "video/mp4;codecs=avc1", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"])
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  return null;
+}
+function clipEstimate() {
+  const mime = clipMime(), secs = Math.max(1, +$("clipSecs").value || 6), mb = (+$("clipQ").value * secs / 8) / 1048576;
+  $("clipMatch").hidden = !(body.mesh && body.animDur > 0);
+  if (!clip.rec) $("clipInfo").textContent = !mime ? "This browser can't record video." : `${/mp4/.test(mime) ? ".mp4" : ".webm"}, about ${mb < 1 ? mb.toFixed(1) : Math.round(mb * 10) / 10} MB`;
+}
+// Browser-recorded WebM has no Duration in its Segment Info, so players show no
+// length or a broken scrubber. Add one (EBML id 0x4489, float64 milliseconds at
+// the default 1 ms TimecodeScale); the segment is written with an unknown size,
+// so nothing after Info needs fixing.
+function webmWithDuration(bytes, ms) {
+  const find = (id, from, to) => { for (let i = from; i + id.length <= to; i++) { let ok = true; for (let k = 0; k < id.length; k++) if (bytes[i + k] !== id[k]) { ok = false; break; } if (ok) return i; } return -1; };
+  const info = find([0x15, 0x49, 0xA9, 0x66], 0, Math.min(bytes.length, 4096));
+  if (info < 0) return bytes;
+  const p = info + 4, b0 = bytes[p]; let len = 1; while (len <= 8 && !(b0 & (0x80 >> (len - 1)))) len++;
+  if (len > 8) return bytes;
+  let size = b0 & (0xFF >> len); for (let k = 1; k < len; k++) size = size * 256 + bytes[p + k];
+  const body = p + len, end = body + size;
+  if (find([0x44, 0x89], body, end) >= 0) return bytes;          // already has one
+  const dur = new Uint8Array(11); dur[0] = 0x44; dur[1] = 0x89; dur[2] = 0x88; new DataView(dur.buffer).setFloat64(3, ms, false);
+  const nsize = size + 11, vint = new Uint8Array(8); vint[0] = 0x01;   // 8-byte size, fits any Info
+  for (let k = 7, v = nsize; k >= 1; k--, v = Math.floor(v / 256)) vint[k] = v & 0xFF;
+  const out = new Uint8Array(bytes.length - len + 8 + 11);
+  out.set(bytes.subarray(0, p), 0); out.set(vint, p); out.set(bytes.subarray(body, end), p + 8); out.set(dur, p + 8 + size); out.set(bytes.subarray(end), p + 8 + size + 11);
+  return out;
+}
+async function recordClip() {
+  if (clip.rec) { clip.stop = true; return; }
+  const mime = clipMime(); if (!mime) { clipEstimate(); return; }
+  const secs = Math.min(60, Math.max(1, +$("clipSecs").value || 6)), H = +$("clipSize").value, shape = $("clipShape").value;
+  const W = shape === "wide" ? Math.round(H * 16 / 9 / 2) * 2 : shape === "tall" ? Math.round(H * 9 / 16 / 2) * 2 : H;
+  const out = document.createElement("canvas"); out.width = W; out.height = H; const g = out.getContext("2d");
+  const src = renderer.domElement, turn = $("clipCam").value === "turn";
+  const target = controls.target.clone(), start = camera.position.clone().sub(target), up = camera.up.clone().normalize(), auto = controls.autoRotate;
+  if (turn) controls.autoRotate = false;
+  if (body.mesh && body.animDur > 0 && $("animPlay")) $("animPlay").click();   // start the animation from its first frame
+  const stream = out.captureStream(30), chunks = [];
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: +$("clipQ").value });
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  const done = new Promise(r => rec.onstop = r);
+  clip.rec = rec; clip.stop = false; $("clipGo").textContent = "Stop";
+  const draw = () => { const sw = src.width, sh = src.height, ar = W / H; let cw = sw, ch = sw / ar; if (ch > sh) { ch = sh; cw = sh * ar; }
+    g.drawImage(src, (sw - cw) / 2, (sh - ch) / 2, cw, ch, 0, 0, W, H); };
+  const t0 = performance.now();
+  await new Promise(resolve => {
+    const step = () => {
+      const t = (performance.now() - t0) / 1000;
+      if (turn) { camera.position.copy(target).add(start.clone().applyAxisAngle(up, 2 * Math.PI * Math.min(1, t / secs))); camera.lookAt(target); }
+      draw(); $("clipInfo").textContent = `Recording ${Math.min(t, secs).toFixed(1)} / ${secs} s`;
+      if (t >= secs || clip.stop) { resolve(); return; }
+      requestAnimationFrame(step);
+    };
+    draw(); rec.start(250); requestAnimationFrame(step);
+  });
+  rec.stop(); await done; stream.getTracks().forEach(t => t.stop());
+  if (turn) { camera.position.copy(target).add(start); camera.lookAt(target); controls.autoRotate = auto; controls.update(); }
+  clip.rec = null; $("clipGo").textContent = "Record";
+  const ext = /mp4/.test(mime) ? "mp4" : "webm", took = performance.now() - t0;
+  let blob = new Blob(chunks, { type: `video/${ext}` });
+  if (ext === "webm") blob = new Blob([webmWithDuration(new Uint8Array(await blob.arrayBuffer()), Math.min(took, secs * 1000 + 100))], { type: "video/webm" });
+  $("clipInfo").textContent = `${(blob.size / 1048576).toFixed(1)} MB .${ext}`;
+  await saveFile(`${baseName()}.${ext}`, blob);
+}
+$("clipGo").addEventListener("click", () => recordClip().catch(e => { clip.rec = null; $("clipGo").textContent = "Record"; $("clipInfo").textContent = "Recording failed: " + e.message; }));
+$("clipMatch").addEventListener("click", () => { const d = body.animDur / 1000; if (d > 0) { $("clipSecs").value = +(d * Math.max(1, Math.ceil(4 / d))).toFixed(2); clipEstimate(); } });
+for (const id of ["clipSecs", "clipQ"]) $(id).addEventListener("input", clipEstimate);
+$("clipSec").addEventListener("toggle", clipEstimate);
 async function runExport(kind) {
   $("exportMenu").open = false;
+  if (kind === "clip") { $("clipSec").hidden = false; $("clipSec").open = true; clipEstimate(); $("clipSec").scrollIntoView({ behavior: "smooth", block: "nearest" }); return; }
   try {
     if (kind === "view") await exportView();
     else if (kind.startsWith("icon")) await exportIcon(+kind.slice(4));
